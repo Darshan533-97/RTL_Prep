@@ -3,15 +3,20 @@ import { questions } from "./questions";
 
 const STORAGE_KEY = "rtl_prep_progress";
 
+const ALL_LEVELS: Level[] = [1, 2, 3, 4];
+
 export function loadProgress(): UserProgress {
   if (typeof window === "undefined")
-    return { answers: [], unlockedLevels: [1] };
+    return { answers: [], unlockedLevels: ALL_LEVELS };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { answers: [], unlockedLevels: [1] };
-    return JSON.parse(raw) as UserProgress;
+    if (!raw) return { answers: [], unlockedLevels: ALL_LEVELS };
+    const parsed = JSON.parse(raw) as UserProgress;
+    // Always ensure all levels are unlocked
+    parsed.unlockedLevels = ALL_LEVELS;
+    return parsed;
   } catch {
-    return { answers: [], unlockedLevels: [1] };
+    return { answers: [], unlockedLevels: ALL_LEVELS };
   }
 }
 
@@ -27,10 +32,11 @@ export function saveAnswer(qId: string, score: number, hintsUsed?: number): void
   if (existing >= 0) progress.answers[existing] = entry;
   else progress.answers.push(entry);
 
-  progress.unlockedLevels = computeUnlocked(progress.answers);
+  progress.unlockedLevels = ALL_LEVELS; // all levels always unlocked
   localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function computeUnlocked(answers: QuestionProgress[]): Level[] {
   const levels: Level[] = [1];
   const avgForLevel = (ids: string[]) => {

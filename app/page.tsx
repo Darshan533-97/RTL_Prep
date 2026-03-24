@@ -49,13 +49,8 @@ export default function Home() {
         {LEVELS.map((lvl) => {
           const levelQs = questions.filter((q) => q.level === lvl.id);
           const stats = getLevelStats(lvl.id as 1|2|3|4, progress.answers, levelQs.length);
-          const locked = !progress.unlockedLevels.includes(lvl.id as 1|2|3|4);
-
           return (
-            <div key={lvl.id} className="card" style={{ opacity: locked ? 0.5 : 1, position: "relative" }}>
-              {locked && (
-                <div style={{ position: "absolute", top: "1rem", right: "1rem", fontSize: "1.2rem" }}>🔒</div>
-              )}
+            <div key={lvl.id} className="card" style={{ position: "relative" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.5rem" }}>
                 <span style={{ background: "var(--surface2)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: "4px", padding: "0.15rem 0.5rem", fontSize: "0.75rem", fontWeight: 700 }}>{lvl.label}</span>
                 <span style={{ fontWeight: 700, fontSize: "1.05rem" }}>{lvl.title}</span>
@@ -72,15 +67,11 @@ export default function Home() {
                 </div>
               </div>
 
-              {locked ? (
-                <button className="btn-ghost" disabled style={{ width: "100%", opacity: 0.4 }}>Locked — pass Level {lvl.id - 1} first</button>
-              ) : (
-                <Link href={`/practice/${lvl.id}`}>
-                  <button className="btn-primary" style={{ width: "100%" }}>
-                    {stats.answered === 0 ? "Start" : stats.answered === stats.total ? "Review" : "Continue"} →
-                  </button>
-                </Link>
-              )}
+              <Link href={`/practice/${lvl.id}`}>
+                <button className="btn-primary" style={{ width: "100%" }}>
+                  {stats.answered === 0 ? "Start" : stats.answered === stats.total ? "Review" : "Continue"} →
+                </button>
+              </Link>
             </div>
           );
         })}
@@ -97,11 +88,10 @@ export default function Home() {
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           {LEVELS.map((lvl) => {
             const levelQs = questions.filter((q) => q.level === lvl.id);
-            const locked = !progress.unlockedLevels.includes(lvl.id as 1|2|3|4);
             return (
               <div key={lvl.id}>
                 <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.4rem", fontWeight: 600 }}>
-                  {lvl.label}: {lvl.title} {locked ? "🔒" : ""}
+                  {lvl.label}: {lvl.title}
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
                   {levelQs.map((q, i) => {
@@ -110,12 +100,12 @@ export default function Home() {
                     const borderColor = score !== undefined ? (score >= 7 ? "#00ff88" : score >= 4 ? "#ffdd00" : "#ff4444") : "var(--border)";
                     const bg = score !== undefined ? (score >= 7 ? "#0d2a1a" : score >= 4 ? "#2a2a0d" : "#2a0d0d") : "var(--surface)";
                     return (
-                      <Link key={q.id} href={locked ? "/" : `/practice/${lvl.id}?q=${i}`}>
+                      <Link key={q.id} href={`/practice/${lvl.id}?q=${i}`}>
                         <button style={{
                           padding: "0.25rem 0.6rem", borderRadius: "4px", border: `1px solid ${borderColor}`,
-                          background: bg, color: borderColor, cursor: locked ? "not-allowed" : "pointer",
-                          fontSize: "0.75rem", fontWeight: 600, opacity: locked ? 0.4 : 1,
-                        }} disabled={locked} title={q.topic}>
+                          background: bg, color: borderColor, cursor: "pointer",
+                          fontSize: "0.75rem", fontWeight: 600,
+                        }} title={q.topic}>
                           Q{i + 1}
                         </button>
                       </Link>
