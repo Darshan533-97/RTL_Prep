@@ -17,6 +17,7 @@ export default function PracticePage() {
   const [submitted, setSubmitted] = useState(false);
   const [selfScore, setSelfScore] = useState<number | null>(null);
   const [progress, setProgress] = useState(loadProgress());
+  const [hintsUsed, setHintsUsed] = useState(0);
 
   useEffect(() => {
     const p = loadProgress();
@@ -36,7 +37,7 @@ export default function PracticePage() {
 
   const handleScore = (score: number) => {
     setSelfScore(score);
-    saveAnswer(q.id, score);
+    saveAnswer(q.id, score, hintsUsed);
     setProgress(loadProgress());
   };
 
@@ -44,6 +45,7 @@ export default function PracticePage() {
     setSubmitted(false);
     setSelfScore(null);
     setAnswer("");
+    setHintsUsed(0);
     if (idx < levelQs.length - 1) setIdx(idx + 1);
     else router.push("/");
   };
@@ -64,15 +66,27 @@ export default function PracticePage() {
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
         {levelQs.map((lq, i) => {
           const done = progress.answers.find((a) => a.questionId === lq.id);
+          const score = done?.score ?? null;
+          const isActive = i === idx;
+          let borderColor = "var(--border)";
+          let bgColor = "var(--surface)";
+          let color = "var(--text-muted)";
+          if (isActive) {
+            borderColor = "var(--accent)";
+            bgColor = "#00ff8822";
+            color = "var(--accent)";
+          } else if (score !== null) {
+            if (score >= 7) { borderColor = "#00ff88"; bgColor = "#1a3a2a"; color = "#00ff88"; }
+            else if (score >= 4) { borderColor = "#ffdd00"; bgColor = "#3a3a1a"; color = "#ffdd00"; }
+            else { borderColor = "#ff4444"; bgColor = "#3a1a1a"; color = "#ff4444"; }
+          }
           return (
             <button key={lq.id}
-              onClick={() => { setIdx(i); setSubmitted(false); setSelfScore(null); setAnswer(""); }}
+              onClick={() => { setIdx(i); setSubmitted(false); setSelfScore(null); setAnswer(""); setHintsUsed(0); }}
               style={{
                 padding: "0.3rem 0.75rem", borderRadius: "4px", border: "1px solid",
-                borderColor: i === idx ? "var(--accent)" : done ? "#2a4a3a" : "var(--border)",
-                background: i === idx ? "#00ff8822" : done ? "#1a2e22" : "var(--surface)",
-                color: i === idx ? "var(--accent)" : done ? "#00cc6a" : "var(--text-muted)",
-                cursor: "pointer", fontSize: "0.8rem", fontWeight: i === idx ? 700 : 400,
+                borderColor, background: bgColor, color,
+                cursor: "pointer", fontSize: "0.8rem", fontWeight: isActive ? 700 : 400,
               }}>
               Q{i + 1} {done ? "✓" : ""}
             </button>
@@ -106,6 +120,25 @@ export default function PracticePage() {
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
           />
+          {/* Hints */}
+          {q.hints && q.hints.length > 0 && (
+            <div style={{ marginTop: "0.75rem" }}>
+              {hintsUsed > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                  {q.hints.slice(0, hintsUsed).map((hint, hi) => (
+                    <div key={hi} style={{ padding: "0.6rem 0.9rem", background: "#1e2a1e", border: "1px solid #2a4a2a", borderRadius: "6px", fontSize: "0.85rem", color: "var(--text)", lineHeight: 1.5 }}>
+                      <span style={{ color: "var(--accent)", fontWeight: 700, marginRight: "0.4rem" }}>💡 Hint {hi + 1}:</span>{hint}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="btn-ghost" disabled={hintsUsed >= q.hints.length}
+                onClick={() => setHintsUsed((h) => Math.min(h + 1, q.hints!.length))}
+                style={{ fontSize: "0.85rem" }}>
+                {hintsUsed >= q.hints.length ? "No more hints" : `💡 Hint ${hintsUsed + 1}/${q.hints.length}`}
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.75rem" }}>
             <button className="btn-primary" onClick={handleSubmit} disabled={!answer.trim()}>
               Submit Answer
@@ -149,6 +182,11 @@ export default function PracticePage() {
                   </a>
                 ))}
               </div>
+              {q.source_note && (
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem", fontStyle: "italic" }}>
+                  📌 {q.source_note}
+                </div>
+              )}
             </div>
           )}
 
@@ -176,9 +214,14 @@ export default function PracticePage() {
           {(selfScore !== null || !answer.trim()) && (
             <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
               {selfScore !== null && (
-                <span className={`score-badge ${selfScore >= 7 ? "score-good" : selfScore >= 4 ? "score-mid" : "score-low"}`}>
-                  {selfScore}
-                </span>
+                <>
+                  <span className={`score-badge ${selfScore >= 7 ? "score-good" : selfScore >= 4 ? "score-mid" : "score-low"}`}>
+                    {selfScore}
+                  </span>
+                  {hintsUsed > 0 && (
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontStyle: "italic" }}>(with hints)</span>
+                  )}
+                </>
               )}
               <button className="btn-primary" onClick={handleNext}>
                 {idx < levelQs.length - 1 ? "Next Question →" : "Finish Level →"}

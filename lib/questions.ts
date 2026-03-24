@@ -16,6 +16,11 @@ export const questions: Question[] = [
       { title: "CVA6 Register File", url: "https://github.com/openhwgroup/cva6/blob/master/core/register_file_ff.sv", type: "repo" },
       { title: "Patterson & Hennessy — Appendix C", url: "https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6", type: "book" },
     ],
+    hints: [
+      "Consider what triggers the output change — is it a continuous level or a single moment in time?",
+      "One device is 'transparent' while its enable is high (you can see D through to Q). The other only captures D at one specific instant.",
+      "A latch is level-sensitive: Q follows D whenever enable is HIGH. A flip-flop is edge-triggered: Q only updates on the clock edge (rising or falling). Use flip-flops in synchronous designs to prevent glitch propagation and simplify STA.",
+    ],
   },
   {
     id: "l1-q2",
@@ -31,6 +36,11 @@ export const questions: Question[] = [
       { title: "PicoRV32 RTL (clean Verilog style reference)", url: "https://github.com/YosysHQ/picorv32/blob/master/picorv32.v", type: "repo" },
       { title: "Weste & Harris CMOS VLSI Design Ch. 5", url: "https://www.pearson.com/en-us/subject-catalog/p/cmos-vlsi-design-a-circuits-and-systems-perspective/P200000003196", type: "book" },
     ],
+    hints: [
+      "Think about the SystemVerilog keywords: always_comb vs always_ff. What does each tell the tool about the intended hardware?",
+      "Two key signals for the tool: the sensitivity list and the assignment type (= vs <=). One implies storage, the other doesn't. What happens if you forget an else in a combinational block?",
+      "always_comb → combinational (use = blocking). always_ff @(posedge clk) → sequential (use <= non-blocking). Missing else/default in always block → latch inferred (a common interview trap). always_comb makes a missing else a compile error.",
+    ],
   },
   {
     id: "l1-q3",
@@ -44,6 +54,11 @@ export const questions: Question[] = [
       "Setup and hold are the fundamental constraints that make synchronous design work. STA tools (Primetime, Tempus) check every flip-flop pair: launch FF → combinational path → capture FF, and verify Tsetup and Thold are met across all PVT corners.\n\nHold violations are particularly nasty in silicon: they cannot be fixed by slowing the clock. They usually show up when adjacent FFs are very fast with little combinational logic between them (e.g., direct connections). Signoff requires hold fixing via buffer insertion in physical design.\n\nMetastability is the failure mode when setup/hold are violated — the output of the FF enters an intermediate voltage state that resolves randomly to 0 or 1 after an indeterminate time. MTBF (mean time between failures) calculations quantify this risk in async interfaces.",
     resources: [
       { title: "Weste & Harris CMOS VLSI Design — Timing", url: "https://www.pearson.com/en-us/subject-catalog/p/cmos-vlsi-design-a-circuits-and-systems-perspective/P200000003196", type: "book" },
+    ],
+    hints: [
+      "Think about a 'window' around the clock edge where the data input must be stable. What are the two sides of that window?",
+      "One constraint is about time BEFORE the clock edge (so the FF can 'prepare'), the other is about time AFTER the edge (so the FF can 'capture' reliably).",
+      "Setup = data stable for Tsu BEFORE the clock edge (violation → metastability). Hold = data stable for Th AFTER the edge (violation → wrong data captured). Fmax = 1/(Tclk_to_q + Tcomb + Tsu). Hold violations are fixed with buffer insertion — slowing the clock does NOT help.",
     ],
   },
   {
@@ -59,6 +74,11 @@ export const questions: Question[] = [
     resources: [
       { title: "CVA6 Performance Counters", url: "https://github.com/openhwgroup/cva6/blob/master/core/csr_regfile.sv", type: "repo" },
     ],
+    hints: [
+      "Start with an always_ff block. What goes in the sensitivity list for a synchronous design?",
+      "Synchronous reset means the reset check goes INSIDE the clocked block (not in the sensitivity list). Use non-blocking assignments (<=).",
+      "always_ff @(posedge clk) begin if (rst) count <= 4'b0; else count <= count + 1'b1; end — That's the complete module body. 4-bit wraps naturally from 15 back to 0.",
+    ],
   },
   {
     id: "l1-q5",
@@ -72,6 +92,11 @@ export const questions: Question[] = [
       "Clock domain crossing (CDC) is one of the most common sources of silicon bugs. The 2-FF synchronizer works by giving the metastable output of the first FF enough time (one full clock cycle) to resolve before the second FF samples it. The MTBF of the synchronizer depends on the clock frequency and FF characteristics.\n\nFor multi-bit signals, you cannot use individual synchronizers on each bit — the bits may be captured in different cycles, giving a torn read. Solutions: Gray-code encoding (only 1 bit changes per transition), async FIFOs (with Gray-coded pointers), or full handshake protocols.\n\nCDC verification requires dedicated tools (Meridian CDC, Questa CDC) because standard simulation and STA don't catch these bugs reliably.",
     resources: [
       { title: "VexRiscv CDC handling", url: "https://github.com/SpinalHDL/VexRiscv", type: "repo" },
+    ],
+    hints: [
+      "Think about what happens when two flip-flops run on completely independent clocks. Can you guarantee when a signal will be sampled?",
+      "The primary danger is metastability — if the signal changes near the receiving clock edge, the FF output may be indeterminate. This is especially tricky for multi-bit buses.",
+      "Use a 2-FF synchronizer for single bits (gives one full cycle for metastability to resolve). For multi-bit: async FIFO with Gray-coded pointers, or a handshake protocol. Never synchronize each bit of a bus independently — you'll get torn reads.",
     ],
   },
   {
@@ -87,6 +112,11 @@ export const questions: Question[] = [
     resources: [
       { title: "PicoRV32 FSM-style control", url: "https://github.com/YosysHQ/picorv32/blob/master/picorv32.v", type: "repo" },
     ],
+    hints: [
+      "Draw the state diagram first. What partial sequences lead toward '101'? You need to track whether you've seen '1', then '10'.",
+      "You need 3 states (not 2!): IDLE, GOT1, GOT10. Separate the state register (always_ff) from next-state logic (always_comb). Is the detect output Mealy or Moore?",
+      "States: IDLE→(in=1)→GOT1, GOT1→(in=0)→GOT10, GOT10→(in=1)→GOT1 and assert detect. GOT10→(in=0)→IDLE. detect is Mealy (depends on current state + input). Use typedef enum for named states.",
+    ],
   },
   {
     id: "l1-q7",
@@ -101,6 +131,11 @@ export const questions: Question[] = [
     resources: [
       { title: "Cliff Cummings — Nonblocking Assignments in Verilog", url: "http://www.sunburst-design.com/papers/CummingsSNUG2000SJ_NBA.pdf", type: "paper" },
     ],
+    hints: [
+      "When does each assignment type actually write its result? One is immediate, one is deferred.",
+      "Consider a shift register swapping values: a = b; b = a; in always_ff. What value does b get? What about with non-blocking?",
+      "Blocking (=): executes immediately, sequential — use in always_comb. Non-blocking (<=): RHS evaluated now, LHS updated at end of time step — use in always_ff. Using = in always_ff on a shift register collapses two FFs into one (both get the same value).",
+    ],
   },
   {
     id: "l1-q8",
@@ -114,6 +149,11 @@ export const questions: Question[] = [
       "Parameterization is essential for reusable RTL IP. A single parameterized FIFO, adder, or arbiter can be instantiated at multiple widths without code duplication. Parameters are resolved at elaboration time — the synthesized netlist will have concrete widths.\n\nGenerate statements are powerful but can obfuscate designs if overused. Common uses: generating arrays of module instances (e.g., N cache ways), conditionally compiling ECC logic, or selecting between different implementations based on a parameter.\n\nThe '0 syntax in SystemVerilog is a width-inferred zero — cleaner than writing {N{1'b0}} and avoids width mismatch warnings.",
     resources: [
       { title: "CVA6 parameterized cache", url: "https://github.com/openhwgroup/cva6/blob/master/core/cache_subsystem/wt_dcache.sv", type: "repo" },
+    ],
+    hints: [
+      "How do you pass a configurable width to a module so it can be changed at instantiation time without editing the source?",
+      "The syntax is #(parameter int N = 8) in the module declaration. Port widths then use [N-1:0]. What does generate do differently from regular RTL?",
+      "module reg_n #(parameter int N = 8) with logic [N-1:0] d, q. Use '0 for width-inferred zero (cleaner than {N{1'b0}}). Generate runs at elaboration time to replicate/conditionally instantiate modules — not at simulation time.",
     ],
   },
 
@@ -132,6 +172,11 @@ export const questions: Question[] = [
       { title: "CVA6 5-stage pipeline", url: "https://github.com/openhwgroup/cva6/blob/master/core/ex_stage.sv", type: "repo" },
       { title: "Patterson & Hennessy Ch. 4", url: "https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6", type: "book" },
     ],
+    hints: [
+      "Categorize hazards by what is 'in conflict': a hardware resource, a data dependency, or program flow control.",
+      "Forwarding routes results from later pipeline stages back to the ALU inputs. But what if the result isn't even computed yet when the next instruction needs it?",
+      "Structural: resource conflict (e.g., single memory port). Data: RAW (forwarding fixes most, but load-use needs 1 stall — result not ready until end of MEM). Control: branch redirects fetch. Forwarding compares dest registers of EX/MEM with src registers of ID/EX.",
+    ],
   },
   {
     id: "l2-q2",
@@ -146,6 +191,11 @@ export const questions: Question[] = [
     resources: [
       { title: "Cliff Cummings — Simulation and Synthesis Techniques for Async FIFOs", url: "http://www.sunburst-design.com/papers/CummingsSNUG2002SJ_FIFO1.pdf", type: "paper" },
       { title: "CVA6 Cache/AXI interface", url: "https://github.com/openhwgroup/cva6/blob/master/core/cache_subsystem/axi_adapter.sv", type: "repo" },
+    ],
+    hints: [
+      "If you synchronize each bit of a bus independently, what guarantee do you have about which bits are from the 'old' value vs the 'new' value?",
+      "The problem is 'torn reads' — different bits resolve their metastability in different cycles, giving a nonsense intermediate value. Gray code solves this for one specific pattern. What's the general solution?",
+      "Solutions: (1) Async FIFO with Gray-coded pointers (only 1 bit changes per increment — safe to synchronize individually). (2) Gray encode counters before crossing. (3) Handshake (req/ack through synchronizers). Never synchronize multi-bit buses bit-by-bit.",
     ],
   },
   {
@@ -162,6 +212,11 @@ export const questions: Question[] = [
       { title: "CVA6 D-Cache implementation", url: "https://github.com/openhwgroup/cva6/blob/master/core/cache_subsystem/wt_dcache.sv", type: "repo" },
       { title: "Patterson & Hennessy Ch. 5 — Memory Hierarchy", url: "https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6", type: "book" },
     ],
+    hints: [
+      "Think about how many possible 'slots' a given memory address can land in. That number defines the associativity.",
+      "More choices (ways) means fewer conflict misses, but you have to compare more tags in parallel. What structures grow with the number of ways?",
+      "Direct-mapped=1 location (fast, cheap, conflict misses). N-way=N comparators in parallel, N-to-1 mux, replacement logic. Fully associative=comparator per line (only for TLBs/victim caches). More ways → lower miss rate, higher area/latency. LRU→PLRU approximation for cost.",
+    ],
   },
   {
     id: "l2-q4",
@@ -175,6 +230,11 @@ export const questions: Question[] = [
       "STA constraint quality is as important as RTL quality. Over-constraining wastes area and power (synthesis over-buffers). Under-constraining (wrong false/multicycle paths) ships silicon bugs.\n\nFalse paths commonly appear at: reset logic (synchronous reset trees don't need to meet timing in the same way), test logic (scan chains), and clock domain boundaries (already handled by CDC analysis). Multicycle paths appear in low-bandwidth interfaces, iterative datapaths, and anything explicitly designed to operate over multiple cycles.\n\nIn real tapeouts, the constraints file (SDC) is reviewed as carefully as the RTL. A wrong constraint in the SDC is as dangerous as a bug in the RTL.",
     resources: [
       { title: "Weste & Harris — Static Timing Analysis", url: "https://www.pearson.com/en-us/subject-catalog/p/cmos-vlsi-design-a-circuits-and-systems-perspective/P200000003196", type: "book" },
+    ],
+    hints: [
+      "Not every path in the synthesized netlist can actually be active at runtime. What do you call a path that exists in the netlist but can never carry real data?",
+      "A false path is one that's structurally present but functionally unreachable. A multicycle path is real but intentionally slow. Can you think of a clock mux example for false paths?",
+      "False path: a clock-domain mux off-path input (set_false_path — removes from STA). Multicycle path: a divider read only every 4 cycles (set_multicycle_path 4 — relaxes constraint). Both must be justified by microarchitectural intent; misuse masks real timing bugs.",
     ],
   },
   {
@@ -191,6 +251,11 @@ export const questions: Question[] = [
       { title: "CVA6 AXI adapter", url: "https://github.com/openhwgroup/cva6/blob/master/core/cache_subsystem/axi_adapter.sv", type: "repo" },
       { title: "ARM AXI4 Specification", url: "https://developer.arm.com/documentation/ihi0022/latest/", type: "spec" },
     ],
+    hints: [
+      "AXI4 has 5 channels. Think about why read and write operations each need an address channel AND a data channel — and writes also need a response.",
+      "Separating address from data enables pipelining: a new address can be accepted before the previous transaction completes. What does the valid/ready handshake accomplish?",
+      "5 channels: AW (write addr), W (write data), B (write response), AR (read addr), R (read data). valid/ready: transfer only when BOTH high. Address/data separation → multiple outstanding transactions via IDs. AXI-Lite = simplified (no bursts), AXI-Stream = no address (streaming).",
+    ],
   },
   {
     id: "l2-q6",
@@ -204,6 +269,11 @@ export const questions: Question[] = [
       "Reset strategy is a real sign-off concern in ASIC design. Asynchronous reset assertion is often desired (you want the chip to reset even if the clock is dead), but synchronous deassertion is essential for correct operation.\n\nThe standard reset synchronizer: two FFs with asynchronous reset, connected in series, with the synchronized output driving the rest of the chip. When reset is asserted, both FFs immediately go low. When reset deasserts, the deassertion propagates through the two-stage synchronizer, ensuring all downstream logic sees it on the same clock edge.\n\nIn complex SoCs with multiple clock domains, each domain needs its own reset synchronizer for its local clock.",
     resources: [
       { title: "CVA6 Reset handling", url: "https://github.com/openhwgroup/cva6", type: "repo" },
+    ],
+    hints: [
+      "Asynchronous assertion is desirable (works even without a clock), but what's the danger of asynchronous deassertion when the clock is running?",
+      "If reset deasserts near a clock edge, different flip-flops across the chip might come out of reset on different clock cycles. What structure fixes this?",
+      "Reset synchronizer: 2 FFs with async reset in series. Assert → both FFs go to 0 immediately. Deassert → propagates synchronously through 2 stages. Each clock domain needs its own synchronizer. Best of both: async assert (works without clock) + sync deassert (safe).",
     ],
   },
   {
@@ -219,6 +289,11 @@ export const questions: Question[] = [
     resources: [
       { title: "Cliff Cummings FIFO paper", url: "http://www.sunburst-design.com/papers/CummingsSNUG2002SJ_FIFO1.pdf", type: "paper" },
     ],
+    hints: [
+      "A FIFO needs read and write pointers. How do you tell if it's empty vs full when both pointers point to the same location?",
+      "Use pointers that are 1 bit wider than the address bits. The extra MSB tracks how many times the pointer has wrapped around. When does empty differ from full using this scheme?",
+      "Empty: wr_ptr == rd_ptr (all bits equal, same wrap count). Full: MSBs differ, lower bits equal (wr wrapped once more than rd). assign full = (wr_ptr[ADDR_W] != rd_ptr[ADDR_W]) && (wr_ptr[ADDR_W-1:0] == rd_ptr[ADDR_W-1:0]).",
+    ],
   },
   {
     id: "l2-q8",
@@ -232,6 +307,11 @@ export const questions: Question[] = [
       "Dynamic power = C × V² × f × α where α is activity factor. Clock gating reduces α for idle register banks — in a CPU, large structures like the register file, instruction queue, or FPU can be clock-gated when not in use, saving 20-40% dynamic power.\n\nThe ICG cell is a standard cell in every cell library. It consists of a negative-level-sensitive latch (samples enable on clock low) feeding an AND gate. The latch prevents enable glitches from propagating to the gated clock output. RTL should infer ICGs — most synthesis tools will convert always_ff with enable conditions to ICG cells automatically if the flow is set up correctly.\n\nMulti-level clock gating (gating at the block, sub-block, and register level) is standard practice in modern SoC design.",
     resources: [
       { title: "CVA6 clock gating examples", url: "https://github.com/openhwgroup/cva6", type: "repo" },
+    ],
+    hints: [
+      "Clock gating saves power by disabling the clock to FFs that won't change. Why can't you just AND the enable directly with the clock signal?",
+      "Glitches on the enable would corrupt the gated clock. The ICG cell uses a latch to prevent this. When does the latch sample the enable, and why?",
+      "ICG cell: negative-level-sensitive latch (samples enable when CLK is LOW) + AND gate. The latch prevents enable glitches from propagating. Enable must be stable during CLK high phase. Synthesizers infer ICGs from enable conditions in always_ff. DFT requires ICGs to be scan-testable.",
     ],
   },
 
@@ -250,6 +330,11 @@ export const questions: Question[] = [
       { title: "CVA6 Issue stage / Scoreboard", url: "https://github.com/openhwgroup/cva6/blob/master/core/issue_stage.sv", type: "repo" },
       { title: "Patterson & Hennessy Appendix C — OoO", url: "https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6", type: "book" },
     ],
+    hints: [
+      "Tomasulo solves two types of hazards: true dependencies (RAW) and false dependencies (WAW, WAR). How does register renaming eliminate false dependencies?",
+      "Think about the four key structures: where instructions wait for operands, how results are broadcast, how register names are tracked, and how in-order retirement is maintained.",
+      "RAT maps arch registers → physical registers (eliminates WAR/WAW false deps). Reservation stations hold instructions until operands ready. CDB broadcasts results to all RS simultaneously. ROB enables precise exceptions and in-order retirement by committing from the head.",
+    ],
   },
   {
     id: "l3-q2",
@@ -264,6 +349,11 @@ export const questions: Question[] = [
     resources: [
       { title: "BOOM RISC-V OoO Core", url: "https://github.com/riscv-boom/riscv-boom", type: "repo" },
       { title: "CVA6 Branch Prediction", url: "https://github.com/openhwgroup/cva6/blob/master/core/frontend/bht.sv", type: "repo" },
+    ],
+    hints: [
+      "Each predictor uses more information than the previous. Bimodal uses only the branch's own past. What extra information does gshare add?",
+      "Gshare adds global branch history (correlates with recent branches). TAGE goes further — it uses multiple history lengths simultaneously. Why is a single history length a compromise?",
+      "Bimodal: 2-bit counter indexed by PC (branch-local history). Gshare: XOR(PC, GHR) → correlation with recent branches. TAGE: multiple tables with geometrically increasing history lengths; uses longest matching table. Key: different branches need different history depths.",
     ],
   },
   {
@@ -280,6 +370,11 @@ export const questions: Question[] = [
       { title: "RISC-V ISA Specification — Memory Model", url: "https://riscv.org/technical/specifications/", type: "spec" },
       { title: "CVA6 Store Buffer", url: "https://github.com/openhwgroup/cva6/blob/master/core/ex_stage.sv", type: "repo" },
     ],
+    hints: [
+      "Memory consistency is about the ORDER in which stores from one core become VISIBLE to other cores. Why would a CPU ever delay making a store visible?",
+      "Store buffers let a CPU continue without waiting for the store to reach the shared cache. This breaks SC. What is TSO's specific relaxation?",
+      "SC: all ops appear in some total order consistent with program order (slow — requires store to be globally visible before continuing). TSO: stores go to a buffer (visible to self immediately, to others later) — allows write→read reordering. ARM/RISC-V (RVWMO) allow even more reorderings; use FENCE to enforce order.",
+    ],
   },
   {
     id: "l3-q4",
@@ -295,6 +390,11 @@ export const questions: Question[] = [
       { title: "BOOM/Chipyard TileLink coherence", url: "https://github.com/chipsalliance/rocket-chip", type: "repo" },
       { title: "Patterson & Hennessy Ch. 5 — Multiprocessors", url: "https://www.elsevier.com/books/computer-organization-and-design-risc-v-edition/patterson/978-0-12-820331-6", type: "book" },
     ],
+    hints: [
+      "What does 'Modified' mean in MESI? If a line is Modified, where is the only copy of the correct data?",
+      "The Modified core has the only valid copy — memory is stale. When Core B reads that line, the Modified core must intervene. What are the steps?",
+      "Core B issues BusRd → snoop detects Core A has M → Core A writes back (or forwards directly) → Core A: M→Invalid or Shared → Core B: Invalid→Shared. Memory is updated because only Core A had correct data. MOESI adds Owned state to avoid unnecessary memory writeback.",
+    ],
   },
   {
     id: "l3-q5",
@@ -309,6 +409,11 @@ export const questions: Question[] = [
     resources: [
       { title: "BOOM superscalar RISC-V", url: "https://github.com/riscv-boom/riscv-boom", type: "repo" },
     ],
+    hints: [
+      "For every structure that must handle N operations per cycle, ask: does the hardware cost grow linearly or super-linearly with N?",
+      "The wakeup logic for reservation stations is O(N²). Register file ports grow multiplicatively with execution unit count. What's the fundamental ILP limit in real code?",
+      "Bottlenecks: fetch bandwidth (8 insn/cycle, multi-branch prediction), decode (8 in parallel), rename (8 RAT writes atomically), wakeup O(RS×N) comparators, RF ports (2R+1W per EU = 24R+8W for 8-wide), retire 8/cycle. Real ILP in code rarely exceeds 3-4 IPC — SMT/multi-core is more efficient.",
+    ],
   },
   {
     id: "l3-q6",
@@ -322,6 +427,11 @@ export const questions: Question[] = [
       "The FO4 (fanout-of-4) delay is a technology-independent metric: one FO4 delay is the delay of an inverter driving 4 identical inverters. A typical clock cycle budget is 15-20 FO4 delays. Complex operations like a 64-bit adder (~8-10 FO4 with carry-lookahead) or a large mux tree can consume most of a cycle's budget.\n\nTiming-aware RTL habits: (1) Register outputs of long critical paths; (2) Use one-hot encoding for wide case statements in critical paths; (3) Avoid read-modify-write patterns on large structures in one cycle; (4) Know your target frequency and process node — 1GHz in 28nm is much easier than 3GHz in the same node.\n\nIn tapeout schedules, timing closure is often the last-mile problem that delays tapeout by weeks. RTL designers who understand physical design are invaluable.",
     resources: [
       { title: "Weste & Harris — Design for Performance", url: "https://www.pearson.com/en-us/subject-catalog/p/cmos-vlsi-design-a-circuits-and-systems-perspective/P200000003196", type: "book" },
+    ],
+    hints: [
+      "Timing closure means all paths meet setup/hold after place-and-route. Why can't the physical design team just 'fix it' with buffers and optimizations?",
+      "Critical paths are determined by RTL structure — a deep combinational chain will fail timing regardless of physical tricks. What's the budget in FO4 delays?",
+      "RTL determines critical paths: deep logic chains, wide priority encoders, large mux trees all eat timing budget. ~15-20 FO4 delays per cycle. Physical fixes (buffering) add area/power but can't shorten logic depth. RTL fixes: pipeline long paths, restructure arithmetic, use one-hot encoding.",
     ],
   },
   {
@@ -338,6 +448,11 @@ export const questions: Question[] = [
       { title: "riscv-formal verification framework", url: "https://github.com/YosysHQ/riscv-formal", type: "repo" },
       { title: "VexRiscv verification", url: "https://github.com/SpinalHDL/VexRiscv", type: "repo" },
     ],
+    hints: [
+      "Code coverage tells you what code ran. What does it NOT tell you about correctness?",
+      "Code coverage is structural (what lines executed). Functional coverage is semantic (what scenarios were exercised). Can you have 100% line coverage but miss a critical corner case?",
+      "100% code coverage: every line ran, but never tested cache-full+store+interrupt corner case. Code coverage can't detect missing features (no code to cover). Functional coverage: covergroups define meaningful scenarios (hit/miss × load/store × privilege). Use constrained-random + functional coverage + formal for closure.",
+    ],
   },
   {
     id: "l3-q8",
@@ -353,6 +468,132 @@ export const questions: Question[] = [
       { title: "Google TPU v1 Paper (Jouppi et al. 2017)", url: "https://arxiv.org/abs/1704.04760", type: "paper" },
       { title: "Gemmini open-source systolic array", url: "https://github.com/ucb-bar/gemmini", type: "repo" },
     ],
+    hints: [
+      "Think about how data flows in a grid of processing elements. What operation does each PE do, and where does data go after it's processed?",
+      "The key advantage is data reuse: each element of A and B passes through multiple PEs, so you need fewer memory accesses per FLOP. What are the limitations for irregular or sparse workloads?",
+      "A×B: A flows horizontally, B flows vertically, partial sums accumulate through PEs. High arithmetic intensity (FLOPs/byte — roofline model). Limitations: poor utilization for non-square matrices, inflexible for sparsity, pipeline fill/drain latency, non-linear ops (activations) done off-array.",
+    ],
+  },
+  // ─── LEVEL 4: REAL-WORLD CELLS (common_cells / PULP Platform) ───────────────
+  {
+    id: "l4-q1",
+    level: 4,
+    topic: "Leading Zero Counter (lzc)",
+    question: "Implement a parameterized leading/trailing zero counter in SystemVerilog. Given an N-bit input vector, output the number of leading zeros (from MSB) or trailing zeros (from LSB) based on a MODE parameter. Also output an empty flag when no zeros are found.",
+    reference_answer: "```systemverilog\nmodule lzc #(\n  parameter int WIDTH = 8,\n  parameter bit MODE  = 1'b0  // 0=leading zeros, 1=trailing zeros\n) (\n  input  logic [WIDTH-1:0]         in_i,\n  output logic [$clog2(WIDTH)-1:0] cnt_o,\n  output logic                     empty_o\n);\n\n  // Reverse input for trailing-zero mode\n  logic [WIDTH-1:0] in_rev;\n  always_comb begin\n    for (int i = 0; i < WIDTH; i++)\n      in_rev[i] = in_i[WIDTH-1-i];\n  end\n\n  logic [WIDTH-1:0] sel;\n  assign sel = MODE ? in_i : in_rev;\n\n  // Recursive tree: find first 1 from MSB\n  // For a WIDTH-bit input, use priority encoder logic\n  always_comb begin\n    cnt_o   = '0;\n    empty_o = 1'b1;\n    for (int i = WIDTH-1; i >= 0; i--) begin\n      if (sel[i]) begin\n        cnt_o   = WIDTH - 1 - i;\n        empty_o = 1'b0;\n      end\n    end\n  end\nendmodule\n```\n\nThe real `lzc.sv` from common_cells uses a recursive generate-based tree for better synthesis QoR: it splits the input in half, solves each half recursively, then merges results. The tree has depth $clog2(WIDTH), giving O(log N) critical path. The `empty_o` flag is 1 when all bits of the input are 1 (no zeros to count — the input is all ones). For trailing-zero mode, the input is reversed before processing.",
+    explanation: "Leading zero counting is fundamental in floating-point normalization (finding the shift amount to normalize a mantissa), priority encoding, and arbitration. The naive loop implementation has O(N) critical path depth. The generate-based recursive approach in common_cells halves the problem each level, achieving O(log N) depth — critical for wide inputs (e.g., 64-bit) at high frequency.\n\nKey implementation note: `empty_o` is misnamed in some descriptions — it is actually high when the input has *no zeros* to count (all bits are 1), meaning the counter output is meaningless. In floating-point, this indicates a zero mantissa.\n\nSynthesis tip: a for-loop priority encoder in always_comb will synthesize to a chain of muxes (O(N) depth). The recursive tree synthesizes to a balanced tree of half-selectors (O(log N) depth). For 64-bit inputs at 1GHz+, this difference matters.",
+    hints: [
+      "Think about using a generate block to recursively split the input in half",
+      "Use $clog2(WIDTH) to determine output width",
+      "The empty flag should be 1 when all bits are 1 (no zeros to count)",
+    ],
+    source_note: "Inspired by common_cells / lzc.sv — ETH Zurich / PULP Platform (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q2",
+    level: 4,
+    topic: "Spill Register (valid/ready)",
+    question: "Implement a spill register in SystemVerilog — a two-entry buffer that cuts all combinational paths between a valid/ready producer and consumer. The module must have: valid_i/ready_o on input side, valid_o/ready_i on output side, parameterized data type T. It should accept new data even when the output is stalled (this is what makes it a spill register, not a simple register).",
+    reference_answer: "```systemverilog\nmodule spill_register #(\n  parameter type T = logic [7:0]\n) (\n  input  logic clk_i,\n  input  logic rst_ni,\n  // Input side\n  input  logic valid_i,\n  output logic ready_o,\n  input  T     data_i,\n  // Output side\n  output logic valid_o,\n  input  logic ready_i,\n  output T     data_o\n);\n\n  // Main register\n  T     main_data;\n  logic main_valid;\n  // Spill register (overflow slot)\n  T     spill_data;\n  logic spill_valid;\n\n  assign ready_o = !spill_valid;  // Accept when spill slot is empty\n  assign valid_o = main_valid;\n  assign data_o  = main_data;\n\n  always_ff @(posedge clk_i or negedge rst_ni) begin\n    if (!rst_ni) begin\n      main_valid  <= 1'b0;\n      spill_valid <= 1'b0;\n    end else begin\n      // Consumer takes data\n      if (ready_i && main_valid) begin\n        main_valid <= spill_valid;\n        main_data  <= spill_data;\n        spill_valid <= 1'b0;\n      end\n      // Producer pushes data\n      if (valid_i && ready_o) begin\n        if (!main_valid || ready_i) begin\n          main_valid <= 1'b1;\n          main_data  <= data_i;\n        end else begin\n          spill_valid <= 1'b1;\n          spill_data  <= data_i;\n        end\n      end\n    end\n  end\nendmodule\n```\n\nThe key property: `ready_o` depends only on internal state (`spill_valid`), not on `ready_i`. This fully cuts the combinational ready path from consumer to producer, which is the primary use case for a spill register in pipeline design.",
+    explanation: "In a valid/ready handshake (AXI-stream style), a combinational dependency from `ready_i` back to `ready_o` creates a long combinational path across pipeline stages. In a deep pipeline, this ready chain can span many stages and become the critical path.\n\nThe spill register breaks this: `ready_o` depends only on whether the spill slot is occupied — a registered signal. The consumer's `ready_i` never directly gates the producer's `ready_o`.\n\nThe two-slot design is minimal: one slot for data currently being presented to the consumer, one slot to absorb one cycle of backpressure. With only one slot (a simple register), you'd have to deassert `ready_o` as soon as you have data, creating bubble cycles.\n\nIn the common_cells implementation, there is also a `flush_i` port for pipeline flush support. The parameterized type T allows any struct or packed array to flow through.",
+    hints: [
+      "You need 2 storage slots: one main register and one overflow/spill slot",
+      "ready_o should be high when the spill slot is empty",
+      "When both slots are full and ready_i is low, backpressure must propagate",
+    ],
+    source_note: "Inspired by common_cells / spill_register_flushable.sv — ETH Zurich (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q3",
+    level: 4,
+    topic: "Parameterized FIFO (fifo_v3)",
+    question: "Design a parameterized synchronous FIFO in SystemVerilog with: configurable DEPTH and DATA_WIDTH, a FALL_THROUGH parameter (when 1, data written in cycle N is readable in cycle N without a clock edge), full/empty flags, and a usage counter. The FALL_THROUGH mode requires a combinational bypass path.",
+    reference_answer: "```systemverilog\nmodule fifo_v3 #(\n  parameter int DEPTH      = 8,\n  parameter int DATA_WIDTH = 32,\n  parameter bit FALL_THROUGH = 1'b0\n) (\n  input  logic                  clk_i, rst_ni,\n  input  logic                  flush_i,\n  // Write port\n  input  logic                  push_i,\n  input  logic [DATA_WIDTH-1:0] wdata_i,\n  output logic                  full_o,\n  // Read port\n  input  logic                  pop_i,\n  output logic [DATA_WIDTH-1:0] rdata_o,\n  output logic                  empty_o,\n  output logic [$clog2(DEPTH):0] usage_o\n);\n\n  localparam int PTR_W = $clog2(DEPTH) + 1; // +1 bit to distinguish full/empty\n\n  logic [PTR_W-1:0] wr_ptr, rd_ptr;\n  logic [DATA_WIDTH-1:0] mem [DEPTH];\n\n  assign usage_o = wr_ptr - rd_ptr;  // unsigned, works with wrap\n  assign full_o  = (usage_o == DEPTH);\n  assign empty_o = (usage_o == 0);\n\n  always_ff @(posedge clk_i or negedge rst_ni) begin\n    if (!rst_ni || flush_i) begin\n      wr_ptr <= '0;\n      rd_ptr <= '0;\n    end else begin\n      if (push_i && !full_o) begin\n        mem[wr_ptr[$clog2(DEPTH)-1:0]] <= wdata_i;\n        wr_ptr <= wr_ptr + 1;\n      end\n      if (pop_i && !empty_o)\n        rd_ptr <= rd_ptr + 1;\n    end\n  end\n\n  // Read data: fall-through bypass or registered\n  if (FALL_THROUGH) begin : gen_ft\n    always_comb begin\n      if (empty_o && push_i)\n        rdata_o = wdata_i;  // Bypass: show write data combinationally\n      else\n        rdata_o = mem[rd_ptr[$clog2(DEPTH)-1:0]];\n    end\n  end else begin : gen_reg\n    assign rdata_o = mem[rd_ptr[$clog2(DEPTH)-1:0]];\n  end\nendmodule\n```\n\nThe extra pointer bit (PTR_W = $clog2(DEPTH) + 1) is the classic trick: full when wr_ptr - rd_ptr == DEPTH, empty when they are equal. Using only $clog2(DEPTH) bits, you cannot distinguish full from empty when pointers wrap to the same value.",
+    explanation: "This FIFO pattern appears in virtually every real digital design. Key design decisions:\n\n**Pointer width trick**: Using one extra bit beyond the address width allows a simple unsigned subtraction to give usage count and correct full/empty detection even across pointer wrap-around. This is cleaner than the MSB-flip trick (which only gives full/empty, not count).\n\n**Fall-through mode**: Useful when the consumer needs data in the same cycle it was written (e.g., a receive buffer where you want zero latency when non-empty). Requires the bypass combinational path. Be careful: this creates a combinational path from `push_i`/`wdata_i` to `rdata_o`, which may affect timing.\n\n**Flush**: A synchronous flush should reset both pointers. The `rst_ni` is async reset. In real designs, be careful with async reset on memory arrays — many synthesis tools handle this differently.\n\nIn common_cells `fifo_v3.sv`, the same structure is used with additional support for a THRESHOLD output for flow control.",
+    hints: [
+      "Use $clog2(DEPTH) for pointer width, but add 1 extra bit to distinguish full from empty",
+      "Fall-through: when empty and push happens same cycle as pop, bypass directly",
+      "The usage count = write_pointer - read_pointer (unsigned subtraction handles wrap)",
+    ],
+    source_note: "Inspired by common_cells / fifo_v3.sv — ETH Zurich / Florian Zaruba (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q4",
+    level: 4,
+    topic: "Round-Robin Arbiter",
+    question: "Implement a fair round-robin arbiter in SystemVerilog for N requestors. The arbiter maintains a rotating priority pointer. In fair mode: after granting requestor i, the next highest-priority requestor is the one with the next higher index that has an active request (wrapping around). Output a one-hot grant signal.",
+    reference_answer: "```systemverilog\nmodule rr_arbiter #(\n  parameter int N = 4\n) (\n  input  logic       clk_i,\n  input  logic       rst_ni,\n  input  logic [N-1:0] req_i,\n  output logic [N-1:0] grant_o\n);\n\n  logic [$clog2(N)-1:0] prio;  // current lowest-priority index\n\n  // Rotate requests: double the vector to handle wrap\n  logic [2*N-1:0] req_double;\n  assign req_double = {req_i, req_i};\n\n  // Find first set bit starting at prio+1 (wrapping)\n  logic [2*N-1:0] mask;\n  always_comb begin\n    grant_o = '0;\n    // Mask: only consider from prio+1 onward\n    for (int i = 0; i < 2*N; i++)\n      mask[i] = (i > prio && i < prio + N) ? req_double[i] : 1'b0;\n\n    // Find lowest set bit in masked vector\n    for (int i = prio+1; i < prio+N+1; i++) begin\n      if (req_double[i % N] && !grant_o) begin  // simplified\n        grant_o[i % N] = 1'b1;\n      end\n    end\n  end\n\n  // Update priority after grant\n  always_ff @(posedge clk_i or negedge rst_ni) begin\n    if (!rst_ni)\n      prio <= '0;\n    else if (|grant_o) begin\n      // Find which was granted\n      for (int i = 0; i < N; i++)\n        if (grant_o[i]) prio <= i[$clog2(N)-1:0];\n    end\n  end\nendmodule\n```\n\nThe `rr_arb_tree` in common_cells uses a binary tree of 2-way arbiters rather than a loop, giving O(log N) critical path depth. For large N (e.g., 64 requestors in a NoC), the tree structure is essential for timing closure.",
+    explanation: "Round-robin arbiters are everywhere in on-chip interconnects: AXI crossbars, NoC routers, shared bus arbiters, FIFO port selectors.\n\nThe core algorithm: maintain a 'last granted' pointer. On each arbitration, the highest priority is the requestor just above the last-granted one (modulo N). If none above, wrap around.\n\nThe double-vector trick (replicate req_i twice, search from prio+1 to prio+N) elegantly handles the wrap-around without explicit modular arithmetic in the loop.\n\nIn common_cells `rr_arb_tree.sv`, the tree structure recursively builds 2-way arbiters. At each level, two sub-trees compete, with the winner selected based on the current priority. The tree approach parallelizes the comparison and is more synthesis-friendly for large N.\n\nFairness consideration: this is work-conserving (grants to whoever is requesting) and starvation-free (each requestor gets priority in rotation). Non-work-conserving arbiters (skip slots even when requested) exist but are rare.",
+    hints: [
+      "Store the last-granted index in a register — this becomes the lowest priority next cycle",
+      "Mask the requests below (and equal to) the current priority pointer, find first set bit in masked vector",
+      "If no requests above priority pointer, fall back to checking all requests from index 0",
+    ],
+    source_note: "Inspired by common_cells / rr_arb_tree.sv — ETH Zurich (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q5",
+    level: 4,
+    topic: "Pseudo-LRU Tree (plru_tree)",
+    question: "Implement a pseudo-LRU (PLRU) replacement policy for an N-way cache set using a binary tree of bits. Given a one-hot used_i signal (which way was accessed), update the internal tree state and output a one-hot plru_o signal indicating the least recently used way to evict.",
+    reference_answer: "```systemverilog\nmodule plru_tree #(\n  parameter int N_WAYS = 4  // Must be power of 2\n) (\n  input  logic             clk_i,\n  input  logic             rst_ni,\n  input  logic [N_WAYS-1:0] used_i,   // one-hot: way that was accessed\n  output logic [N_WAYS-1:0] plru_o    // one-hot: way to evict\n);\n  // N_WAYS-1 internal tree bits (binary tree)\n  logic [N_WAYS-2:0] tree_q, tree_d;\n\n  always_ff @(posedge clk_i or negedge rst_ni) begin\n    if (!rst_ni) tree_q <= '0;\n    else         tree_q <= tree_d;\n  end\n\n  always_comb begin\n    tree_d = tree_q;\n    // Update: for each accessed way, set bits on path from root to leaf\n    // pointing AWAY from the accessed way\n    for (int i = 0; i < N_WAYS; i++) begin\n      if (used_i[i]) begin\n        // Walk tree from root, updating bits on path to leaf i\n        // (specific indices depend on N_WAYS tree layout)\n        // For N=4:\n        // root=0: left subtree=ways 0,1 / right=ways 2,3\n        // level1: node1 for ways 0,1; node2 for ways 2,3\n        // way 0: update tree[0]=1 (go right), tree[1]=1 (go right)\n        // way 1: update tree[0]=1 (go right), tree[1]=0 (go left)\n        // way 2: update tree[0]=0 (go left),  tree[2]=1 (go right)\n        // way 3: update tree[0]=0 (go left),  tree[2]=0 (go left)\n      end\n    end\n    // PLRU: traverse tree following bits to find LRU leaf\n    // plru_o = one-hot way at the leaf reached by following tree bits\n  end\nendmodule\n```\n\nThe real common_cells `plru_tree.sv` generates the tree paths using a recursive generate block, parameterized over N_WAYS. Each internal node index maps to specific ways in its subtree. The update and traversal use `for` loops over tree levels with computed indices.",
+    explanation: "True LRU for an N-way set requires maintaining a complete ordering of N elements — that's O(N log N) state bits and complex update logic. PLRU approximates this with only N-1 bits (a binary tree), making it practical for hardware.\n\nTree structure for N=4:\n```\n        [0]\n       /   \\\n     [1]   [2]\n    / \\   / \\\n   W0 W1 W2 W3\n```\nEach internal node bit: 0 = 'LRU is in left subtree', 1 = 'LRU is in right subtree'.\n\n**Update** (way i accessed): on the path from root to leaf i, set each bit to point *away* from i's subtree (because i was just used, so it's no longer LRU).\n\n**Eviction** (find PLRU): traverse from root, following bits (0=go left, 1=go right) until you reach a leaf — that's the PLRU way.\n\nPLRU gives ~85-95% of true LRU hit rate in practice. It's used in CVA6's L1 cache and many commercial designs. The PLRU miss rate penalty over true LRU is typically <1% for most workloads.",
+    hints: [
+      "A PLRU tree for N ways needs N-1 internal bits arranged as a binary tree",
+      "When way i is accessed, update the bits on the path from root to leaf i — each bit points away from the accessed way",
+      "The LRU way is found by traversing the tree following each bit (bit=0 → go left, bit=1 → go right)",
+    ],
+    source_note: "Inspired by common_cells / plru_tree.sv — ETH Zurich / David Schaffenrath, Florian Zaruba (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q6",
+    level: 4,
+    topic: "Gray Code CDC FIFO",
+    question: "Design an asynchronous FIFO that safely crosses clock domains using Gray-coded pointers. The write side uses clk_w, the read side uses clk_r. Explain why you must Gray-code the pointers before synchronizing them across clock domains, and show the full implementation with correct full/empty flag generation.",
+    reference_answer: "```systemverilog\nmodule cdc_fifo_gray #(\n  parameter int DATA_WIDTH = 32,\n  parameter int LOG2_DEPTH = 3   // depth = 2^LOG2_DEPTH\n) (\n  // Write domain\n  input  logic                  clk_w, rst_w_ni,\n  input  logic                  push_i,\n  input  logic [DATA_WIDTH-1:0] wdata_i,\n  output logic                  wfull_o,\n  // Read domain\n  input  logic                  clk_r, rst_r_ni,\n  input  logic                  pop_i,\n  output logic [DATA_WIDTH-1:0] rdata_o,\n  output logic                  rempty_o\n);\n  localparam DEPTH = 2**LOG2_DEPTH;\n  localparam PTR_W = LOG2_DEPTH + 1;  // +1 for full/empty distinction\n\n  logic [DATA_WIDTH-1:0] mem [DEPTH];\n\n  // Write pointer (binary) in write domain\n  logic [PTR_W-1:0] wptr_bin, wptr_gray;\n  // Read pointer (binary) in read domain\n  logic [PTR_W-1:0] rptr_bin, rptr_gray;\n\n  // Synchronized pointers (2-FF synchronizers)\n  logic [PTR_W-1:0] rptr_gray_sync1, rptr_gray_sync2;  // in write domain\n  logic [PTR_W-1:0] wptr_gray_sync1, wptr_gray_sync2;  // in read domain\n\n  // Write domain logic\n  always_ff @(posedge clk_w or negedge rst_w_ni) begin\n    if (!rst_w_ni) wptr_bin <= '0;\n    else if (push_i && !wfull_o) wptr_bin <= wptr_bin + 1;\n  end\n  // Binary to Gray\n  assign wptr_gray = wptr_bin ^ (wptr_bin >> 1);\n\n  // Read domain logic\n  always_ff @(posedge clk_r or negedge rst_r_ni) begin\n    if (!rst_r_ni) rptr_bin <= '0;\n    else if (pop_i && !rempty_o) rptr_bin <= rptr_bin + 1;\n  end\n  assign rptr_gray = rptr_bin ^ (rptr_bin >> 1);\n\n  // 2-FF synchronizers\n  always_ff @(posedge clk_w) {rptr_gray_sync2, rptr_gray_sync1} <= {rptr_gray_sync1, rptr_gray};\n  always_ff @(posedge clk_r) {wptr_gray_sync2, wptr_gray_sync1} <= {wptr_gray_sync1, wptr_gray};\n\n  // Full: MSBs differ, lower bits equal (in Gray domain)\n  assign wfull_o  = (wptr_gray == {~rptr_gray_sync2[PTR_W-1], rptr_gray_sync2[PTR_W-2:0]});\n  // Empty: all bits equal\n  assign rempty_o = (rptr_gray == wptr_gray_sync2);\n\n  // Memory\n  always_ff @(posedge clk_w)\n    if (push_i && !wfull_o)\n      mem[wptr_bin[LOG2_DEPTH-1:0]] <= wdata_i;\n  assign rdata_o = mem[rptr_bin[LOG2_DEPTH-1:0]];\nendmodule\n```\n\nWhy Gray code: a binary counter can change multiple bits simultaneously (e.g., 0111→1000 flips all 4 bits). If a synchronizer samples during this transition, it can capture any of 16 values — a multi-bit metastability risk. Gray code guarantees only 1 bit changes per increment, so a synchronizer can only produce one of two valid adjacent values, both of which are correct for the protocol.",
+    explanation: "The CDC FIFO is one of the most important and error-prone digital design patterns. The Gray-code trick is elegant: since only 1 bit changes per count step, a synchronizer can only capture one of two adjacent pointer values — the old value or the new value. Both are valid: if you see the old value, you think the FIFO has one fewer entry than it does (safe: slightly conservative), never more than it does (which would be unsafe).\n\n**Full flag (write domain perspective)**: The FIFO is full when the write pointer has lapped the read pointer — they point to the same slot but the write pointer is 'one lap ahead'. In the Gray+extra-bit encoding, this is when all bits match except the MSB. The full check must use the *synchronized* read pointer (potentially stale) — it can falsely indicate 'not full' but never 'not full when actually full'... wait, actually the opposite: it conservatively says 'full' earlier than necessary but never allows overflow.\n\n**Empty flag (read domain)**: Empty when synchronized write pointer equals read pointer in Gray code — same address, same lap.\n\nThe common_cells `cdc_fifo_gray.sv` handles reset synchronization carefully — both domains must be reset in a coordinated way to avoid pointer corruption at startup.",
+    hints: [
+      "Binary pointers can change multiple bits simultaneously — Gray code changes only 1 bit per increment, making it safe to synchronize",
+      "Synchronize the write pointer to clk_r domain for empty detection; synchronize read pointer to clk_w domain for full detection",
+      "Use the extra MSB trick: full when synchronized write ptr MSB != read ptr MSB but lower bits match; empty when all bits equal",
+    ],
+    source_note: "Inspired by common_cells / cdc_fifo_gray.sv — ETH Zurich (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q7",
+    level: 4,
+    topic: "Binary ↔ Gray Code Converter",
+    question: "Write synthesizable SystemVerilog for: (a) binary_to_gray: convert an N-bit binary number to Gray code, (b) gray_to_binary: convert an N-bit Gray code back to binary. Then explain why Gray code is used for multi-bit values crossing clock domain boundaries.",
+    reference_answer: "```systemverilog\n// (a) Binary to Gray — combinational, parallel\nmodule binary_to_gray #(\n  parameter int N = 8\n) (\n  input  logic [N-1:0] bin_i,\n  output logic [N-1:0] gray_o\n);\n  assign gray_o = bin_i ^ (bin_i >> 1);\nendmodule\n\n// (b) Gray to Binary — combinational, sequential (each bit depends on prior)\nmodule gray_to_binary #(\n  parameter int N = 8\n) (\n  input  logic [N-1:0] gray_i,\n  output logic [N-1:0] bin_o\n);\n  always_comb begin\n    bin_o[N-1] = gray_i[N-1];  // MSB is unchanged\n    for (int i = N-2; i >= 0; i--)\n      bin_o[i] = bin_o[i+1] ^ gray_i[i];\n  end\nendmodule\n```\n\n**Why Gray code for CDC**: When a binary counter transitions from `0111` to `1000`, all 4 bits change simultaneously. A 2-FF synchronizer sampling this transition could capture `0000`, `0001`, `0010`, `0100`, `0110`, `1000`, or any other combination — all due to independent metastability resolution in each FF. This is a multi-bit metastability problem and can corrupt the pointer value completely.\n\nGray code guarantees exactly 1 bit changes per increment. A synchronizer can only capture the old value or the new value — both differ by exactly 1 count, which is safe for a FIFO pointer (conservative by at most 1 entry).",
+    explanation: "The binary-to-Gray conversion is elegantly simple: XOR each bit with the bit above it. The MSB is unchanged. This is a combinational operation with no carry propagation — O(1) gate depth regardless of N.\n\nGray-to-binary conversion is *sequential* in terms of data dependency: each bit depends on all higher bits. It cannot be parallelized in the same way — there is a data dependency chain of depth N. However, this doesn't matter in practice: the conversion happens in the source clock domain before synchronization, so there is a full clock cycle available for the conversion. The critical path is O(N) XOR gates in series, which is still fast.\n\n**XOR tree trick for gray_to_binary**: You can compute each output bit independently using XOR reduction: `bin[i] = ^gray[N-1:i]` (XOR of gray bits from MSB down to position i). This gives O(log N) depth using XOR trees, at the cost of more gates. Synthesis tools often optimize this automatically.\n\nHistorical note: Gray code was patented by Frank Gray at Bell Labs in 1953, originally for use in shaft encoders to avoid spurious transitions as a mechanical encoder moved between positions.",
+    hints: [
+      "binary_to_gray: gray[i] = bin[i] XOR bin[i+1] (MSB is unchanged: gray[N-1] = bin[N-1])",
+      "gray_to_binary: bin[N-1] = gray[N-1], then bin[i] = bin[i+1] XOR gray[i] — it is sequential, not parallel",
+      "In CDC: if a binary counter transitions from 0111 to 1000, all 4 bits change — a synchronizer could capture any combination. Gray code ensures only 1 bit changes.",
+    ],
+    source_note: "Inspired by common_cells / binary_to_gray.sv and gray_to_binary.sv — ETH Zurich (Solderpad License)",
+    resources: [],
+  },
+  {
+    id: "l4-q8",
+    level: 4,
+    topic: "Synchronizer with Edge Detector (sync_wedge)",
+    question: "Implement a serial line synchronizer with edge detection in SystemVerilog. The module takes an asynchronous input signal, passes it through a 2-FF synchronizer to prevent metastability, then detects rising and falling edges on the synchronized output. Output: sync_o (synchronized), rise_o (1-cycle pulse on rising edge), fall_o (1-cycle pulse on falling edge).",
+    reference_answer: "```systemverilog\nmodule sync_wedge (\n  input  logic clk_i,\n  input  logic rst_ni,\n  input  logic en_i,     // synchronizer enable (tie high if unused)\n  input  logic serial_i, // asynchronous input\n  output logic r_edge_o, // rising edge pulse (1 cycle)\n  output logic f_edge_o, // falling edge pulse (1 cycle)\n  output logic serial_o  // synchronized output\n);\n\n  logic [2:0] sync_q;  // shift register: [2]=delayed, [1]=sync, [0]=first FF\n\n  always_ff @(posedge clk_i or negedge rst_ni) begin\n    if (!rst_ni)\n      sync_q <= '0;\n    else if (en_i)\n      sync_q <= {sync_q[1:0], serial_i};  // shift in new data\n  end\n\n  assign serial_o = sync_q[1];              // 2nd FF output = synchronized\n  assign r_edge_o = sync_q[1] & ~sync_q[2]; // rose: was 0, now 1\n  assign f_edge_o = ~sync_q[1] & sync_q[2]; // fell: was 1, now 0\nendmodule\n```\n\nThe 3-bit shift register approach: bit [0] is the first synchronizing FF (may be metastable), bit [1] is the second FF (resolved, safe to use), bit [2] is the delayed copy for edge detection. The edge outputs are one-cycle pulses, synchronous to clk_i.",
+    explanation: "This module is ubiquitous in SoC designs for handling external asynchronous signals: GPIO pins, UART RX, button inputs, interrupt lines from slow peripherals.\n\n**Why 2 FFs**: A single FF sampling an asynchronous signal can go metastable — it may take longer than one clock period to resolve to a valid 0 or 1. The second FF gives the first FF's output a full clock cycle to settle before it is sampled again. With typical FF metastability characteristics (MTBF >> 1 year at common frequencies), the probability of the second FF capturing a metastable value is negligible.\n\n**MTBF calculation**: MTBF = exp(tw/τ) / (f_clock × f_data × C), where tw is the setup window, τ is the metastability resolution time constant (~30ps in 28nm), and C is a process constant. For safety-critical signals, 3 FFs (extra resolution time) or specialized metastability-hardened flops may be used.\n\n**Why NOT use async signals directly**: Metastability in combinational logic (e.g., feeding directly into a decoder or mux) can cause X-propagation — the undefined output corrupts downstream state in ways that are hard to debug.\n\nIn common_cells, `sync_wedge.sv` also includes a `serial_o` that reflects the synchronized value directly, which is useful for level-sensitive receivers in addition to the edge pulses.",
+    hints: [
+      "The 2-FF synchronizer: two back-to-back flip-flops, both clocked by the destination clock",
+      "Edge detection requires a 3rd register to hold the previous synchronized value",
+      "rise_o = sync_o AND NOT prev_sync; fall_o = NOT sync_o AND prev_sync",
+    ],
+    source_note: "Inspired by common_cells / sync_wedge.sv — ETH Zurich (Solderpad License)",
+    resources: [],
   },
 ];
 

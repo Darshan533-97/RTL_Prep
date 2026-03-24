@@ -6,9 +6,10 @@ import { questions } from "@/lib/questions";
 import { UserProgress } from "@/lib/types";
 
 const LEVELS = [
-  { id: 1, label: "Level 1", title: "Foundations", desc: "Flip-flops, combinational/sequential logic, FSMs, basic Verilog syntax, setup/hold, clock domains." },
-  { id: 2, label: "Level 2", title: "Intermediate", desc: "Pipeline hazards, forwarding, cache design, CDC, AXI protocol, timing constraints, FIFO design." },
-  { id: 3, label: "Level 3", title: "Advanced",     desc: "Out-of-order execution, branch prediction, memory consistency, cache coherence, systolic arrays." },
+  { id: 1, label: "Level 1", title: "Foundations",       desc: "Flip-flops, combinational/sequential logic, FSMs, basic Verilog syntax, setup/hold, clock domains." },
+  { id: 2, label: "Level 2", title: "Intermediate",      desc: "Pipeline hazards, forwarding, cache design, CDC, AXI protocol, timing constraints, FIFO design." },
+  { id: 3, label: "Level 3", title: "Advanced",          desc: "Out-of-order execution, branch prediction, memory consistency, cache coherence, systolic arrays." },
+  { id: 4, label: "Level 4", title: "Real-World Cells",  desc: "Implement production RTL cells: LZC, spill register, FIFO, round-robin arbiter, PLRU tree, CDC FIFO, Gray code, synchronizer." },
 ];
 
 export default function Home() {
@@ -27,7 +28,7 @@ export default function Home() {
           RTL &amp; CPU Design Interview Prep
         </h1>
         <p style={{ color: "var(--text-muted)", marginTop: "0.5rem", fontSize: "0.95rem" }}>
-          24 curated questions across 3 difficulty levels. Unlock the next level by averaging ≥6/10 on the previous.
+          32 curated questions across 4 difficulty levels. Unlock the next level by averaging ≥6/10 on the previous.
         </p>
       </div>
 
@@ -47,8 +48,8 @@ export default function Home() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1.25rem" }}>
         {LEVELS.map((lvl) => {
           const levelQs = questions.filter((q) => q.level === lvl.id);
-          const stats = getLevelStats(lvl.id as 1|2|3, progress.answers, levelQs.length);
-          const locked = !progress.unlockedLevels.includes(lvl.id as 1|2|3);
+          const stats = getLevelStats(lvl.id as 1|2|3|4, progress.answers, levelQs.length);
+          const locked = !progress.unlockedLevels.includes(lvl.id as 1|2|3|4);
 
           return (
             <div key={lvl.id} className="card" style={{ opacity: locked ? 0.5 : 1, position: "relative" }}>
@@ -83,6 +84,11 @@ export default function Home() {
             </div>
           );
         })}
+      </div>
+
+      {/* Extra nav */}
+      <div style={{ display: "flex", gap: "1rem", marginTop: "1.5rem" }}>
+        <Link href="/mock"><button className="btn-ghost">⏱ Mock Interview</button></Link>
       </div>
 
       {/* Resources */}

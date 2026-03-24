@@ -1,4 +1,4 @@
-export type Level = 1 | 2 | 3;
+export type Level = 1 | 2 | 3 | 4;
 
 export interface Resource {
   title: string;
@@ -14,6 +14,8 @@ export interface Question {
   reference_answer: string;
   explanation: string;
   resources: Resource[];
+  hints: string[];
+  source_note?: string;
 }
 
 export interface EvaluationResult {
@@ -28,6 +30,7 @@ export interface QuestionProgress {
   questionId: string;
   score: number;
   answeredAt: string;
+  hintsUsed?: number;
 }
 
 export interface UserProgress {
