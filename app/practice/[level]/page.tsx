@@ -1,15 +1,28 @@
 "use client";
 import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { questions } from "@/lib/questions";
 import { Question } from "@/lib/types";
 import { loadProgress, saveAnswer } from "@/lib/progress";
 import Link from "next/link";
 
+const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
+
+const isCodeQuestion = (q: Question): boolean => q.reference_answer.includes("```");
+
+const CODE_STARTER = `module solution (
+  // Define your ports here
+);
+
+  // Your implementation here
+
+endmodule`;
+
 export default function PracticePage() {
   const params = useParams();
   const router = useRouter();
-  const level = parseInt(params.level as string) as 1|2|3;
+  const level = parseInt(params.level as string) as 1|2|3|4;
 
   const levelQs = questions.filter((q) => q.level === level);
   const [idx, setIdx] = useState(0);
@@ -27,6 +40,13 @@ export default function PracticePage() {
     const firstUnanswered = levelQs.findIndex((q) => !p.answers.find((a) => a.questionId === q.id));
     setIdx(firstUnanswered >= 0 ? firstUnanswered : 0);
   }, []);
+
+  // Pre-populate code starter when switching to a code question
+  useEffect(() => {
+    if (levelQs[idx] && isCodeQuestion(levelQs[idx]) && !answer.trim()) {
+      setAnswer(CODE_STARTER);
+    }
+  }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!levelQs.length) return <div>Invalid level.</div>;
 
@@ -114,12 +134,37 @@ export default function PracticePage() {
       {/* Answer area */}
       {!submitted ? (
         <div>
-          <textarea
-            rows={8}
-            placeholder="Write your answer here. Be specific — vague answers get called out."
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-          />
+          {isCodeQuestion(q) ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: "6px", overflow: "hidden", marginBottom: "0rem" }}>
+              <div style={{ background: "var(--surface2)", padding: "0.4rem 0.75rem", fontSize: "0.75rem", color: "var(--text-muted)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <span style={{ color: "var(--accent)" }}>⬡</span> SystemVerilog Editor
+              </div>
+              <MonacoEditor
+                height="380px"
+                language="verilog"
+                theme="vs-dark"
+                value={answer}
+                onChange={(val) => setAnswer(val || "")}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  wordWrap: "on",
+                  tabSize: 2,
+                  automaticLayout: true,
+                  suggestOnTriggerCharacters: false,
+                }}
+              />
+            </div>
+          ) : (
+            <textarea
+              rows={8}
+              placeholder="Write your answer here. Be specific — vague answers get called out."
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+            />
+          )}
           {/* Hints */}
           {q.hints && q.hints.length > 0 && (
             <div style={{ marginTop: "0.75rem" }}>
@@ -171,19 +216,23 @@ export default function PracticePage() {
           </div>
 
           {/* Resources */}
-          {q.resources.length > 0 && (
+          {(q.resources.length > 0 || q.source_note) && (
             <div className="card" style={{ marginBottom: "1.25rem" }}>
-              <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>See It In Real Code / Papers</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
-                {q.resources.map((r) => (
-                  <a key={r.url} href={r.url} target="_blank" rel="noopener noreferrer"
-                    style={{ color: "var(--accent)", fontSize: "0.9rem", textDecoration: "none" }}>
-                    ↗ {r.title} <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>[{r.type}]</span>
-                  </a>
-                ))}
-              </div>
+              {q.resources.length > 0 && (
+                <>
+                  <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>See It In Real Code / Papers</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                    {q.resources.map((r) => (
+                      <a key={r.url} href={r.url} target="_blank" rel="noopener noreferrer"
+                        style={{ color: "var(--accent)", fontSize: "0.9rem", textDecoration: "none" }}>
+                        ↗ {r.title} <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>[{r.type}]</span>
+                      </a>
+                    ))}
+                  </div>
+                </>
+              )}
               {q.source_note && (
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem", fontStyle: "italic" }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: q.resources.length > 0 ? "0.5rem" : "0", fontStyle: "italic" }}>
                   📌 {q.source_note}
                 </div>
               )}
