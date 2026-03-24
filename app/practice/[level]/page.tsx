@@ -1,5 +1,5 @@
 "use client";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { questions } from "@/lib/questions";
@@ -22,12 +22,14 @@ endmodule`;
 export default function PracticePage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const level = parseInt(params.level as string) as 1|2|3|4;
 
   const levelQs = questions.filter((q) => q.level === level);
   const [idx, setIdx] = useState(0);
   const [answer, setAnswer] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selfScore, setSelfScore] = useState<number | null>(null);
   const [progress, setProgress] = useState(loadProgress());
   const [hintsUsed, setHintsUsed] = useState(0);
@@ -36,10 +38,16 @@ export default function PracticePage() {
     const p = loadProgress();
     setProgress(p);
     if (!p.unlockedLevels.includes(level)) router.push("/");
-    // Start from first unanswered question
-    const firstUnanswered = levelQs.findIndex((q) => !p.answers.find((a) => a.questionId === q.id));
-    setIdx(firstUnanswered >= 0 ? firstUnanswered : 0);
-  }, []);
+    // Jump to specific question if ?q= param provided, else first unanswered
+    const qParam = searchParams.get("q");
+    if (qParam !== null) {
+      const qIdx = parseInt(qParam);
+      setIdx(!isNaN(qIdx) && qIdx >= 0 && qIdx < levelQs.length ? qIdx : 0);
+    } else {
+      const firstUnanswered = levelQs.findIndex((q) => !p.answers.find((a) => a.questionId === q.id));
+      setIdx(firstUnanswered >= 0 ? firstUnanswered : 0);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pre-populate code starter when switching to a code question
   useEffect(() => {
@@ -55,6 +63,7 @@ export default function PracticePage() {
 
   const handleSubmit = () => { if (answer.trim()) setSubmitted(true); };
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleScore = (score: number) => {
     setSelfScore(score);
     saveAnswer(q.id, score, hintsUsed);
@@ -239,44 +248,11 @@ export default function PracticePage() {
             </div>
           )}
 
-          {/* Self-scoring */}
-          {answer.trim() && selfScore === null && (
-            <div className="card" style={{ marginBottom: "1.25rem", borderColor: "var(--border)" }}>
-              <div style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: "0.75rem" }}>How well did you do? (be honest)</div>
-              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                {[0,1,2,3,4,5,6,7,8,9,10].map((s) => (
-                  <button key={s} onClick={() => handleScore(s)}
-                    style={{
-                      padding: "0.4rem 0.75rem", borderRadius: "4px", border: "1px solid",
-                      borderColor: s >= 7 ? "var(--accent)" : s >= 4 ? "var(--yellow)" : "var(--red)",
-                      background: "transparent",
-                      color: s >= 7 ? "var(--accent)" : s >= 4 ? "var(--yellow)" : "var(--red)",
-                      cursor: "pointer", fontWeight: 700,
-                    }}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {(selfScore !== null || !answer.trim()) && (
-            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-              {selfScore !== null && (
-                <>
-                  <span className={`score-badge ${selfScore >= 7 ? "score-good" : selfScore >= 4 ? "score-mid" : "score-low"}`}>
-                    {selfScore}
-                  </span>
-                  {hintsUsed > 0 && (
-                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontStyle: "italic" }}>(with hints)</span>
-                  )}
-                </>
-              )}
-              <button className="btn-primary" onClick={handleNext}>
-                {idx < levelQs.length - 1 ? "Next Question →" : "Finish Level →"}
-              </button>
-            </div>
-          )}
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", marginTop: "0.5rem" }}>
+            <button className="btn-primary" onClick={handleNext}>
+              {idx < levelQs.length - 1 ? "Next Question →" : "Finish Level →"}
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -87,8 +87,45 @@ export default function Home() {
       </div>
 
       {/* Extra nav */}
-      <div style={{ display: "flex", gap: "1rem", marginTop: "1.5rem" }}>
+      <div style={{ display: "flex", gap: "1rem", marginTop: "1.5rem", flexWrap: "wrap" }}>
         <Link href="/mock"><button className="btn-ghost">⏱ Mock Interview</button></Link>
+      </div>
+
+      {/* Quick Jump */}
+      <div className="card" style={{ marginTop: "1.5rem" }}>
+        <h3 style={{ margin: "0 0 1rem 0", fontSize: "0.95rem", fontWeight: 700 }}>🎯 Jump to Any Question</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {LEVELS.map((lvl) => {
+            const levelQs = questions.filter((q) => q.level === lvl.id);
+            const locked = !progress.unlockedLevels.includes(lvl.id as 1|2|3|4);
+            return (
+              <div key={lvl.id}>
+                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.4rem", fontWeight: 600 }}>
+                  {lvl.label}: {lvl.title} {locked ? "🔒" : ""}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
+                  {levelQs.map((q, i) => {
+                    const ans = progress.answers.find((a) => a.questionId === q.id);
+                    const score = ans?.score;
+                    const borderColor = score !== undefined ? (score >= 7 ? "#00ff88" : score >= 4 ? "#ffdd00" : "#ff4444") : "var(--border)";
+                    const bg = score !== undefined ? (score >= 7 ? "#0d2a1a" : score >= 4 ? "#2a2a0d" : "#2a0d0d") : "var(--surface)";
+                    return (
+                      <Link key={q.id} href={locked ? "/" : `/practice/${lvl.id}?q=${i}`}>
+                        <button style={{
+                          padding: "0.25rem 0.6rem", borderRadius: "4px", border: `1px solid ${borderColor}`,
+                          background: bg, color: borderColor, cursor: locked ? "not-allowed" : "pointer",
+                          fontSize: "0.75rem", fontWeight: 600, opacity: locked ? 0.4 : 1,
+                        }} disabled={locked} title={q.topic}>
+                          Q{i + 1}
+                        </button>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Resources */}
