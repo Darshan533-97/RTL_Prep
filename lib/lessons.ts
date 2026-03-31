@@ -2,887 +2,528 @@ export interface CodeSnippet {
   label: string;
   language: string;
   code: string;
+  annotation: string; // line-by-line explanation
 }
 
 export interface Lesson {
   id: string;
+  stage: number;       // pipeline stage order: 1=frontend, 2=decode, 3=issue, 4=execute, 5=memory, 6=commit
   category: string;
   title: string;
+  subtitle: string;
   difficulty: "beginner" | "intermediate" | "advanced";
   duration: string;
   summary: string;
   body: string;
-  keyInsights: string[];
+  keySignals: { name: string; direction: string; explanation: string }[];
   snippets: CodeSnippet[];
+  designDecisions: string[];
   relatedQuestions: string[];
 }
 
 export const lessons: Lesson[] = [
+  // ─── STAGE 1: FRONTEND (Fetch) ───────────────────────────────────────────
   {
-    id: "lesson-01",
-    category: "Pipeline Fundamentals",
-    title: "The Fetch-Decode-Execute Pipeline: Why Pipelining Changed Everything",
-    difficulty: "beginner",
-    duration: "8 min read",
-    summary: "How the 5-stage RISC-V pipeline achieves near 1 IPC — and why that required solving the hazard problem from scratch.",
-    body: `Before pipelining, CPUs executed one instruction at a time: fetch it, decode it, execute it, access memory, write back — and only then start the next instruction. A single-cycle CPU running at 1 GHz would complete roughly 200 million instructions per second if each instruction takes 5 cycles. That was unacceptable even in the 1980s.
-
-The insight that changed everything: those five stages don't need to operate on the same instruction simultaneously. While stage 2 is decoding instruction N, stage 1 can already be fetching instruction N+1. This is pipelining — borrowed directly from assembly lines and car washes.
-
-The classic 5-stage RISC-V pipeline:
-- IF (Instruction Fetch): Read the instruction at PC from the I-cache
-- ID (Instruction Decode): Decode opcode, read source registers from the register file
-- EX (Execute): ALU computes result or calculates memory address
-- MEM (Memory Access): Load or store data to/from D-cache
-- WB (Write Back): Write result to destination register
-
-In steady state, all 5 stages work in parallel on 5 different instructions. Throughput approaches 1 instruction per cycle — a 5x improvement over single-cycle for the same clock frequency. But there's a catch.
-
-The pipeline needs storage between stages — "pipeline registers" or "stage latches." At every clock edge, each stage captures its outputs into a register that the next stage reads. These registers carry not just data but context: the PC (for exceptions and branch recovery), the decoded instruction fields, valid bits (to handle bubbles/stalls), and exception flags that were detected upstream.
-
-The valid bit is critical. When a stall is inserted — say, because of a load-use hazard — the downstream stage receives a bubble: a NOP instruction with valid=0. This propagates through the pipeline and is eventually discarded at WB without modifying any state.
-
-The dirty secret of pipelining: it complicates everything downstream. An instruction in the EX stage was fetched 2 cycles ago. Its source registers were read in the ID stage 1 cycle ago. But another instruction might have written to those registers since then. This is the data hazard problem, and solving it elegantly is what separates good CPU designers from great ones.
-
-The pipeline register between IF and ID is the simplest — it just carries the fetched instruction and the PC. But even here, the valid bit matters: if the branch predictor mispredicted and the fetch was wrong, we need to squash this register (set valid=0) during the pipeline flush.
-
-Real CPUs like CVA6 add more fields: the predicted PC (for branch correction), exception bits set during fetch (page fault, misaligned PC), and privilege level. Every field in a pipeline register has a reason — if you see a field you don't understand, ask what exception or corner case it handles.`,
-    keyInsights: [
-      "Pipelining improves throughput (instructions/second) but does NOT reduce latency for any single instruction — it actually increases it from ~5ns to ~5 cycles worth of latency.",
-      "Pipeline registers are the physical implementation of stage boundaries. Each one adds 1 cycle of latency but enables parallel stage operation.",
-      "The valid bit (also called bubble bit) is how NOPs propagate through the pipeline without corrupting state. Mastering bubble injection is essential for hazard handling.",
-      "Every field in a pipeline register exists to solve a specific problem: PC for exceptions, predicted_pc for branch recovery, exception bits for precise fault handling.",
-      "A 5-stage pipeline has 4 pipeline registers (IF/ID, ID/EX, EX/MEM, MEM/WB). In an OoO processor, the concept expands to tens of stages with queues between them."
-    ],
-    snippets: [
-      {
-        label: "IF/ID Pipeline Register — SystemVerilog",
-        language: "systemverilog",
-        code: `// IF/ID pipeline register
-// Captures the output of the Fetch stage for use by Decode
-typedef struct packed {
-  logic [63:0] pc;           // Program counter of this instruction
-  logic [63:0] predicted_pc; // Branch predictor's next-PC guess
-  logic [31:0] instruction;  // Raw 32-bit instruction word
-  logic        valid;        // 0 = bubble/NOP, 1 = real instruction
-  logic        ex_valid;     // An exception occurred during fetch
-  logic [63:0] ex_tval;      // Exception value (e.g. faulting address)
-} if_id_t;
-
-module if_id_register (
-  input  logic   clk_i,
-  input  logic   rst_ni,
-  input  if_id_t if_id_i,    // From fetch stage
-  output if_id_t if_id_o,    // To decode stage
-  input  logic   stall_i,    // Stall: hold current value
-  input  logic   flush_i     // Flush: insert bubble
-);
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      if_id_o <= '0; // valid=0, everything cleared
-    end else if (flush_i) begin
-      if_id_o       <= '0;
-      if_id_o.valid <= 1'b0; // Insert bubble
-    end else if (!stall_i) begin
-      if_id_o <= if_id_i;    // Normal advance
-    end
-    // stall_i=1 and flush_i=0: hold current value (do nothing)
-  end
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l1-q1", "l2-q1"]
-  },
-
-  {
-    id: "lesson-02",
-    category: "Pipeline Fundamentals",
-    title: "Register Files: The CPU's Scratchpad",
-    difficulty: "beginner",
-    duration: "7 min read",
-    summary: "Why RISC-V has exactly 32 registers, how a register file is built in RTL, and what happens when superscalar designs need more ports.",
-    body: `The register file is the fastest storage in a CPU — sitting between the ALU and the cache hierarchy. In RISC-V, there are 32 general-purpose registers (x0–x31), each 64 bits wide in RV64. x0 is hardwired to zero; writes to it are silently discarded.
-
-Why 32 registers? It's a deliberate ISA tradeoff. More registers means fewer memory spills (a compiler can keep more live values in registers), but each register costs bits in the instruction encoding. RISC-V uses 5-bit register fields, supporting 32 registers while keeping instructions 32 bits wide. ARM64 and x86-64 have a similar count for the same reason. Going to 64 registers would require 6-bit fields and would bloat every instruction or force variable-length encoding.
-
-A single-issue in-order pipeline needs a 2-read-1-write register file: decode reads two source operands (rs1 and rs2) combinationally, and writeback writes the result (rd) synchronously. Reads are combinational (asynchronous) because the decode stage needs the values in the same cycle — adding a clock edge would require an extra pipeline stage. Writes are synchronous (registered on clock edge) to ensure clean timing.
-
-For a 2-wide superscalar that can issue two instructions per cycle, you suddenly need 4 read ports (2 instructions × 2 sources) and 2 write ports. Register file area and power scales roughly as O(ports²) — doubling the ports quadruples the cost. This is why real superscalar CPUs use tricks: banking (split register file into multiple arrays with restricted port sharing), or a physical register file shared between multiple functional units.
-
-The zero register optimization: instead of checking "is rs1 == x0?" in the ALU, most designs just allow the normal read path and ensure that register 0 always reads as zero. This is trivially implemented by initializing the register file with 0 at index 0 and preventing writes to it at the register file write port.
-
-Out-of-order processors complicate this dramatically. They use a physical register file (PRF) with 128–256 entries instead of just 32. The Register Alias Table (RAT) maps the 32 architectural registers to physical register numbers. This renaming eliminates false data dependencies (WAW and WAR hazards) and is the key enabler of out-of-order execution. But for a 5-stage in-order pipeline, the simple 32-entry 2R1W file is all you need.
-
-One subtle correctness issue: write-before-read on the same cycle. If an instruction in WB writes to rd=x5 at the same time that a later instruction in ID reads rs1=x5, which value does the ID stage see? This depends on whether the register file implements "write-then-read" (new value) or "read-then-write" (old value) semantics. Most designs implement forwarding from WB to ID to sidestep this — the register file always reads the committed value, and the forwarding network provides the latest in-flight value.`,
-    keyInsights: [
-      "32 registers is a deliberate ISA tradeoff: enough for compilers to minimize memory spills, few enough to fit in 5-bit instruction fields.",
-      "Reads are combinational (async) so decode gets values in the same cycle. Writes are synchronous to provide clean timing for writeback.",
-      "Register file port count scales as O(ports²) in area/power — a 4R2W file for 2-wide superscalar is 4× more expensive than a 2R1W file.",
-      "x0 always reads as zero. Implement by preventing writes to index 0 at the write port — no special-case logic needed in the ALU.",
-      "Out-of-order CPUs use a Physical Register File (PRF) with 128-256 entries, mapped via a Register Alias Table (RAT). This eliminates WAW/WAR false dependencies."
-    ],
-    snippets: [
-      {
-        label: "32×64-bit Register File — 2 async read ports, 1 sync write port",
-        language: "systemverilog",
-        code: `module register_file #(
-  parameter int unsigned NR_REGS  = 32,
-  parameter int unsigned DATA_W   = 64
-)(
-  input  logic                      clk_i,
-  // Read port A
-  input  logic [$clog2(NR_REGS)-1:0] raddr_a_i,
-  output logic [DATA_W-1:0]          rdata_a_o,
-  // Read port B
-  input  logic [$clog2(NR_REGS)-1:0] raddr_b_i,
-  output logic [DATA_W-1:0]          rdata_b_o,
-  // Write port
-  input  logic                       we_i,
-  input  logic [$clog2(NR_REGS)-1:0] waddr_i,
-  input  logic [DATA_W-1:0]          wdata_i
-);
-  logic [DATA_W-1:0] mem [NR_REGS];
-
-  // Async reads — combinational, available same cycle as address
-  assign rdata_a_o = (raddr_a_i == '0) ? '0 : mem[raddr_a_i];
-  assign rdata_b_o = (raddr_b_i == '0) ? '0 : mem[raddr_b_i];
-
-  // Sync write — register file updates on clock edge
-  always_ff @(posedge clk_i) begin
-    if (we_i && waddr_i != '0) begin // x0 is always zero, discard writes
-      mem[waddr_i] <= wdata_i;
-    end
-  end
-
-  // Initialize all registers to 0 (synthesis: use initial block or reset)
-  initial begin
-    for (int i = 0; i < NR_REGS; i++) mem[i] = '0;
-  end
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l1-q1", "l1-q2"]
-  },
-
-  {
-    id: "lesson-03",
-    category: "Pipeline Fundamentals",
-    title: "Hazard Detection and Forwarding Networks",
-    difficulty: "intermediate",
-    duration: "10 min read",
-    summary: "The forwarding network is where most students fail RTL interviews. Master every path — EX→EX, MEM→EX, and the load-use stall that no amount of forwarding can fix.",
-    body: `Data hazards are the biggest source of pipeline complexity. They occur when an instruction needs a result that hasn't been written back yet. In a 5-stage pipeline, an instruction in EX needs its operands, but the previous instruction's result won't be in the register file until WB — 2 cycles later. Without any mitigation, you'd need 2 stall cycles after every instruction that produces a result. That destroys all pipeline benefit.
-
-Forwarding (also called bypassing) solves this by routing results directly from where they're computed to where they're needed, without waiting for the register file write. There are three forwarding paths you must know cold:
-
-**EX/MEM → EX forward**: The most common case. Instruction N's ALU result is available at the end of the EX stage. Instruction N+1 in EX needs it as an input. Forward the EX/MEM pipeline register value directly to the ALU input mux. This covers the RAW hazard with 1-cycle separation.
-
-**MEM/WB → EX forward**: Instruction N's result passed through MEM and is in the MEM/WB register. Instruction N+2 in EX needs it. Forward MEM/WB register value to ALU input. This covers 2-cycle separation.
-
-**MEM/WB → MEM forward**: For store instructions in MEM that depend on a load result in WB. Less common but must be handled.
-
-The forwarding mux at each ALU input has 3 inputs: the register file output, the EX/MEM forwarded value, and the MEM/WB forwarded value. The hazard detection unit selects which to use by comparing the source register addresses (rs1, rs2) of the instruction in EX against the destination register addresses (rd) of instructions in EX/MEM and MEM/WB.
-
-**The load-use hazard — forwarding cannot save you.** When a load instruction is in EX, its result doesn't exist yet — it won't come back from the D-cache until the end of the MEM stage. So the next instruction in EX (which needs the load result) is one cycle too early. There is no place to forward from. The only solution is to stall the pipeline for 1 cycle: freeze the IF and ID stages (hold their pipeline registers), inject a bubble into EX, and let the load proceed to MEM. After the stall, the load result is in MEM/WB and can be forwarded normally.
-
-The hazard detection unit sits between ID/EX and the IF/ID and ID/EX pipeline registers. It checks: if the instruction in EX is a load AND its rd matches rs1 or rs2 of the instruction in ID — stall. This is the only true stall in a clean 5-stage RISC-V pipeline (assuming a 1-cycle cache).
-
-The forwarding logic must also handle two edge cases: forwarding to x0 should be suppressed (x0 is always zero), and double forwarding — when both EX/MEM and MEM/WB match the same source register, EX/MEM takes priority (it's the newest value).`,
-    keyInsights: [
-      "EX/MEM→EX forwarding handles 1-cycle separation (most instructions). MEM/WB→EX handles 2-cycle separation. Both are implemented as muxes at ALU inputs.",
-      "The load-use hazard cannot be forwarded because the load result doesn't exist until end of MEM stage. A 1-cycle stall (bubble injection) is mandatory.",
-      "Stall implementation: assert stall to IF and ID stage registers (hold them), inject NOP into EX stage (clear EX/MEM register).",
-      "Forwarding priority: EX/MEM result is newer than MEM/WB. If both match, forward EX/MEM. Never forward to x0.",
-      "A compiler can schedule 1 independent instruction in the load delay slot to hide the stall, achieving zero CPI penalty. This is called 'load scheduling'."
-    ],
-    snippets: [
-      {
-        label: "Forwarding Mux Select Logic — all paths",
-        language: "systemverilog",
-        code: `// Forwarding unit: determines ALU input sources
-// Inputs from pipeline registers
-// ex_mem_rd: destination reg of instruction in EX/MEM stage
-// mem_wb_rd: destination reg of instruction in MEM/WB stage
-// id_ex_rs1, id_ex_rs2: source regs of instruction currently in EX
-
-typedef enum logic [1:0] {
-  FWD_REGFILE = 2'b00, // Use register file output (no hazard)
-  FWD_EX_MEM  = 2'b01, // Forward from EX/MEM pipeline register
-  FWD_MEM_WB  = 2'b10  // Forward from MEM/WB pipeline register
-} fwd_sel_t;
-
-module forwarding_unit (
-  input  logic [4:0] id_ex_rs1, id_ex_rs2, // Source regs in EX stage
-  input  logic [4:0] ex_mem_rd,             // Dest reg in EX/MEM
-  input  logic       ex_mem_we,             // EX/MEM writes a reg
-  input  logic [4:0] mem_wb_rd,             // Dest reg in MEM/WB
-  input  logic       mem_wb_we,             // MEM/WB writes a reg
-  output fwd_sel_t   fwd_a_sel,             // Mux select for ALU input A
-  output fwd_sel_t   fwd_b_sel              // Mux select for ALU input B
-);
-  always_comb begin
-    fwd_a_sel = FWD_REGFILE;
-    // EX/MEM forward (higher priority — newer value)
-    if (ex_mem_we && ex_mem_rd != 5'b0 && ex_mem_rd == id_ex_rs1)
-      fwd_a_sel = FWD_EX_MEM;
-    // MEM/WB forward (lower priority — older value)
-    else if (mem_wb_we && mem_wb_rd != 5'b0 && mem_wb_rd == id_ex_rs1)
-      fwd_a_sel = FWD_MEM_WB;
-  end
-  always_comb begin
-    fwd_b_sel = FWD_REGFILE;
-    if (ex_mem_we && ex_mem_rd != 5'b0 && ex_mem_rd == id_ex_rs2)
-      fwd_b_sel = FWD_EX_MEM;
-    else if (mem_wb_we && mem_wb_rd != 5'b0 && mem_wb_rd == id_ex_rs2)
-      fwd_b_sel = FWD_MEM_WB;
-  end
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l2-q1", "l1-q4", "l1-q7"]
-  },
-
-  {
-    id: "lesson-04",
+    id: "stage-01-frontend",
+    stage: 1,
     category: "Frontend",
-    title: "Branch Prediction: Guessing at the Speed of Light",
-    difficulty: "intermediate",
-    duration: "9 min read",
-    summary: "A mispredicted branch wastes 15 cycles in a modern CPU. Here's how branch predictors evolved from 2-bit counters to TAGE — and what the RTL actually looks like.",
-    body: `Every time a branch instruction is fetched, the CPU faces a choice: wait to know the outcome (stalling 3–5 cycles in a simple pipeline, 15–20 cycles in a deep out-of-order machine), or guess and keep fetching speculatively. Modern CPUs guess — and they're right over 95% of the time on real workloads.
+    title: "Stage 1 — Frontend: Instruction Fetch",
+    subtitle: "CVA6 core/frontend/frontend.sv",
+    difficulty: "beginner",
+    duration: "10 min",
+    summary: "The frontend is the CPU's eyes — it fetches instructions from the I-cache, predicts branches, and feeds a stream of instructions to the decode stage. Everything downstream depends on getting this right.",
+    body: `The frontend module in CVA6 is the first real hardware the program counter (PC) touches. Its job sounds simple: read the instruction at the current PC from the instruction cache and pass it downstream. In reality, it orchestrates branch prediction, handles PC redirection from exceptions and mispredictions, manages cache request/response handshakes, and deals with compressed (16-bit) RISC-V instructions that complicate alignment.
 
-The cost of a wrong guess (misprediction) is a pipeline flush: squash all instructions fetched after the branch, redirect the PC to the correct target, and restart. In a 20-stage pipeline running at 4 GHz, a single misprediction wastes ~5 nanoseconds. At 1 billion branches per second in typical code, even 5% misprediction rate causes catastrophic throughput loss.
+WHAT THE FRONTEND DOES (in order every cycle):
 
-**Bimodal predictor** (also called 2-bit counter table): The simplest practical predictor. Index a table of 2-bit saturating counters using the lower bits of the branch PC. Each counter encodes: strongly-not-taken (00), weakly-not-taken (01), weakly-taken (10), strongly-taken (11). Predict taken if counter ≥ 2. Update: increment on taken, decrement on not-taken, saturate at extremes. A 256-entry bimodal predictor fits in 64 bytes and achieves ~85% accuracy. The weakness: aliasing — two different branches hash to the same entry and interfere.
+1. GENERATE NEXT PC: The PC selection mux has multiple sources in priority order:
+   — Exception/trap vector (highest priority: exception_o redirects here)
+   — ERET (return from exception) — uses epc_i
+   — Misprediction correction — uses resolved_branch_i.target_address
+   — Fence/CSR side-effect — uses pc_commit_i
+   — Branch predictor — predicted next PC
+   — PC+4 (default: no branch predicted)
+   This priority chain means if multiple events happen simultaneously, the most critical wins.
 
-**Gshare** improves this by XORing the PC with a global branch history register (GHR) before indexing. The GHR is a shift register that records the last N branch outcomes (1=taken, 0=not-taken). The key insight: branch outcomes are correlated — a loop-exit branch is more predictable if you know the loop body branch has been taken 7 times. Gshare achieves ~90–92% accuracy on SPEC benchmarks with a 1K-entry table.
+2. ISSUE I-CACHE REQUEST: The PC is sent to the instruction cache via icache_dreq_o. The cache returns icache_dreq_i with the instruction word (or a miss signal). CVA6 uses a physically-tagged instruction cache, so there's a TLB lookup before the physical cache access.
 
-**TAGE** (Tagged Geometric history length predictor) is the state of the art. It maintains multiple tables indexed by XOR of PC with history of geometrically increasing lengths (e.g., 4, 8, 16, 32, 64 bits). Each entry has a tag (partial PC hash) to detect aliasing. The predictor uses the longest matching table as the primary prediction. TAGE with 16K entries achieves >97% accuracy. It's used in BOOM (Berkeley Out-of-Order Machine) and most high-performance ARM cores.
+3. BRANCH PREDICTION: The BHT (Branch History Table) and BTB (Branch Target Buffer) are consulted with the current PC to predict whether the next instruction is a branch and where it goes. Prediction happens speculatively before knowing what the instruction actually is.
 
-The Branch Target Buffer (BTB) is separate from the direction predictor. While the direction predictor answers "taken or not taken?", the BTB answers "if taken, what is the target PC?" It's indexed by the branch PC and stores the last-seen target address. Unconditional jumps (JAL) always hit the BTB. Indirect jumps (JALR) use a Return Address Stack (RAS) for calls/returns — a small hardware stack of predicted return addresses.
+4. INSTRUCTION ALIGNMENT: RISC-V supports compressed (C extension) 16-bit instructions. The frontend handles the case where a 32-bit instruction crosses a 64-byte cache line boundary — it must stitch two cache responses together.
 
-In RTL, the BHT update logic must handle two cases: a prediction was made and the branch resolved (update the counter), or a new branch was seen and no prediction existed (allocate an entry). The update path is always 1+ cycles behind the prediction path, which is fine — speculative execution means you're already several instructions ahead.`,
-    keyInsights: [
-      "A 15–20 cycle misprediction penalty in OoO CPUs means even 5% misprediction rate destroys performance. Prediction accuracy is mission-critical.",
-      "2-bit saturating counters provide hysteresis — a single unusual outcome doesn't flip the prediction, reducing noise from loop edge cases.",
-      "Gshare's global history register captures cross-branch correlation. XOR with PC adds PC-specific indexing to reduce aliasing.",
-      "TAGE uses geometrically increasing history lengths to capture both short and long-range patterns — different branches need different history depths.",
-      "The BTB answers 'where to fetch next' while the direction predictor answers 'is this branch taken'. Both are needed for full branch prediction."
+5. HANDSHAKE TO DECODE: The output is fetch_entry_o[], a ready/valid handshake. Each entry carries the instruction word, its PC, the predicted next PC, any fetch exceptions (page fault, access fault), and validity. The decode stage pulls from this when it's ready — if it's stalled, the frontend backs off.
+
+KEY INPUTS THE FRONTEND RESPONDS TO:
+— flush_i: squash everything in-flight (branch mispredict recovery, fence)
+— halt_i: stop fetching (WFI instruction, debug halt)
+— resolved_branch_i: the execution stage reports the actual branch outcome; if mispredicted, redirect PC here
+— set_pc_commit_i + pc_commit_i: after a CSR write with side effects, restart from the commit PC
+— eret_i + epc_i: return from exception handler
+
+The frontend is stateless in one sense — it has no architectural state. But it has significant microarchitectural state: the BHT tables, BTB, return address stack (RAS), and the fetch queue between I-cache and decode. A pipeline flush clears the fetch queue and restarts the BHT speculation from the corrected PC.`,
+    keySignals: [
+      { name: "boot_addr_i", direction: "input", explanation: "The PC on reset — where the CPU starts executing. Typically 0x80000000 for RISC-V DRAM boot or 0x00010000 for ROM." },
+      { name: "flush_i", direction: "input", explanation: "Flush the entire frontend pipeline. Asserted on branch misprediction, fence.i, and exceptions. Causes the fetch queue to drain and BHT speculation to restart from the correct PC." },
+      { name: "resolved_branch_i", direction: "input", explanation: "From the execute stage: the actual branch outcome and target. If it differs from the prediction, flush_i is also asserted and the frontend redirects to the correct PC." },
+      { name: "icache_dreq_o", direction: "output", explanation: "The I-cache request: contains the virtual PC to fetch from. Follows a valid/ready handshake — the frontend asserts valid, the cache asserts ready when it can accept the request." },
+      { name: "icache_dreq_i", direction: "input", explanation: "The I-cache response: contains the instruction word, validity, and any cache exception (page fault). May be stale if the PC changed since the request." },
+      { name: "fetch_entry_o", direction: "output", explanation: "The fetch bundle sent to decode: instruction word, PC, predicted next PC, exception flags. One entry per issue port (CVA6 supports 1 or 2-wide issue)." },
+      { name: "fetch_entry_ready_i", direction: "input", explanation: "Backpressure from the decode stage. When decode stalls (e.g., issue queue full), it deasserts ready, causing the frontend to hold its output." }
     ],
     snippets: [
       {
-        label: "Branch History Table (BHT) — 256-entry bimodal predictor",
+        label: "CVA6 frontend.sv — Module Port Declaration (actual source)",
         language: "systemverilog",
-        code: `// Branch History Table: 256-entry, 2-bit saturating counters
-// Used to predict taken/not-taken for conditional branches
+        annotation: "Read every port. Each signal tells a story about what can redirect the PC.",
+        code: `module frontend
+  import ariane_pkg::*;
+#(
+    parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    parameter type fetch_entry_t    = logic,
+    parameter type icache_dreq_t    = logic,
+    parameter type icache_drsp_t    = logic
+) (
+    input  logic                        clk_i,
+    input  logic                        rst_ni,
+    input  logic [CVA6Cfg.VLEN-1:0]     boot_addr_i,      // PC on reset
 
-module bht #(
-  parameter int unsigned NR_ENTRIES = 256  // must be power of 2
-)(
-  input  logic        clk_i, rst_ni,
-  // Prediction interface
-  input  logic [63:0] vpc_i,           // Virtual PC of branch being fetched
-  output logic        taken_o,         // Predicted outcome
-  // Update interface (from execute stage after branch resolves)
-  input  logic        update_valid_i,
-  input  logic [63:0] update_pc_i,     // PC of resolved branch
-  input  logic        update_taken_i   // Actual outcome
-);
-  localparam int IDX_BITS = $clog2(NR_ENTRIES);
-  // 2-bit saturating counter per entry
-  logic [1:0] bht_mem [NR_ENTRIES];
+    // PC redirection sources (priority: highest first)
+    input  logic                        flush_bp_i,        // Flush branch predictor state
+    input  logic                        flush_i,           // Full frontend flush
+    input  logic                        halt_i,            // Stop fetching (WFI/debug)
+    input  logic                        halt_frontend_i,   // Hold fetch for fence.i
+    input  logic                        set_pc_commit_i,   // Use commit PC (CSR side effect)
+    input  logic [CVA6Cfg.VLEN-1:0]     pc_commit_i,       // Commit stage PC
+    input  logic                        ex_valid_i,        // Exception occurred
+    input  bp_resolve_t                 resolved_branch_i, // Branch resolved in EX stage
+    input  logic                        eret_i,            // Return from exception
+    input  logic [CVA6Cfg.VLEN-1:0]     epc_i,             // Exception return PC
+    input  logic [CVA6Cfg.VLEN-1:0]     trap_vector_base_i,// Exception handler base
+    input  logic                        set_debug_pc_i,    // Debug redirect
+    input  logic                        debug_mode_i,      // CPU in debug mode
 
-  // Predict: index by PC[IDX_BITS+1:2] (skip byte-offset bits)
-  logic [IDX_BITS-1:0] pred_idx;
-  assign pred_idx = vpc_i[IDX_BITS+1:2];
-  assign taken_o  = bht_mem[pred_idx][1]; // MSB: 1x = predict taken
+    // I-Cache interface (valid/ready handshake)
+    output icache_dreq_t                icache_dreq_o,     // Request to I-cache
+    input  icache_drsp_t                icache_dreq_i,     // Response from I-cache
 
-  // Update: saturating increment/decrement
-  logic [IDX_BITS-1:0] upd_idx;
-  assign upd_idx = update_pc_i[IDX_BITS+1:2];
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      for (int i = 0; i < NR_ENTRIES; i++)
-        bht_mem[i] <= 2'b01; // Initialize weakly-not-taken
-    end else if (update_valid_i) begin
-      if (update_taken_i)
-        bht_mem[upd_idx] <= (bht_mem[upd_idx] == 2'b11) ? 2'b11 : bht_mem[upd_idx] + 1;
-      else
-        bht_mem[upd_idx] <= (bht_mem[upd_idx] == 2'b00) ? 2'b00 : bht_mem[upd_idx] - 1;
-    end
-  end
-endmodule`
+    // Handshake to Decode stage (valid/ready)
+    output fetch_entry_t [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_o,
+    output logic         [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_valid_o,
+    input  logic         [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_i
+);`
       }
     ],
-    relatedQuestions: ["l3-q2", "l2-q1"]
+    designDecisions: [
+      "CVA6 uses a decoupled fetch queue (FIFO) between the I-cache response and the decode stage. This absorbs I-cache latency variation without stalling decode when cache hits arrive.",
+      "The resolved_branch_i signal comes from the execute stage — not from a separate branch unit. This means the branch resolution latency is the full EX stage depth, not a shortened path.",
+      "NrIssuePorts is a compile-time parameter. CVA6 can be configured as 1-wide or 2-wide issue by changing this parameter — the fetch stage fetches 1 or 2 instructions per cycle accordingly.",
+      "halt_frontend_i (separate from halt_i) is needed for fence.i: the frontend must stop before the cache flush happens, but the pipeline drains normally. Two separate halt signals give the controller precise control.",
+      "The BHT and BTB are inside the frontend module, not separate modules. This keeps the prediction logic tightly coupled with the PC generation mux, minimizing critical path length."
+    ],
+    relatedQuestions: ["l3-q2", "l2-q1", "l1-q5"]
   },
 
+  // ─── STAGE 2: DECODE / ID STAGE ──────────────────────────────────────────
   {
-    id: "lesson-05",
-    category: "Memory Subsystem",
-    title: "The Load-Store Unit: Where Memory Meets the Pipeline",
-    difficulty: "intermediate",
-    duration: "9 min read",
-    summary: "Loads and stores are deceptively complex. The store buffer, load forwarding, and memory ordering rules are where subtle bugs live — and where interview questions get hard.",
-    body: `Memory operations look simple: load reads from an address, store writes to an address. But in a pipelined processor, they are the source of more corner cases than any other instruction class. Let's walk through what actually happens.
+    id: "stage-02-decode",
+    stage: 2,
+    category: "Decode",
+    title: "Stage 2 — Decode: Instruction Decode & Issue",
+    subtitle: "CVA6 core/id_stage.sv",
+    difficulty: "beginner",
+    duration: "9 min",
+    summary: "Decode cracks open the 32-bit instruction word and figures out what it means: which functional unit runs it, which registers it reads and writes, what immediate value it contains. This is where RISC-V ISA encoding meets hardware.",
+    body: `The decode stage takes the raw instruction bits from the frontend and converts them into a structured description of the operation: what to do, with what operands, producing what result, to which register. In CVA6, this structured description is a scoreboard_entry_t — a hardware record that travels with the instruction through the rest of the pipeline.
 
-**Address Generation Unit (AGU):** Loads and stores compute their effective address in the EX stage: base_register + sign_extended_immediate. This is just an adder — fast, straightforward. The result feeds the MEM stage, where the D-cache is accessed.
+WHAT DECODE DOES:
 
-**Why stores can't commit immediately:** When a store executes and its address and data are known, you might think it should write to the cache right away. It can't. The store might be on a speculative path — a branch earlier in the program might not have been taken, making this store's execution incorrect. The store must wait until it reaches the head of the Reorder Buffer (ROB) and commits before it can write to the cache. Until then, it lives in the store buffer.
+1. OPCODE DECODE: RISC-V instructions encode the operation in the opcode field [6:0], funct3 [14:12], and funct7 [31:25]. The decoder is a large combinational block that maps these bit patterns to an internal operation enum (ADD, SUB, LOAD, STORE, BRANCH, JAL, CSR, etc.). For illegal instructions, it generates an illegal_instr exception.
 
-**The Store Buffer:** A queue of (address, data, size) tuples for stores that have executed but not yet committed. On commit, the store buffer entry is retired to the cache. The store buffer typically holds 16–32 entries in modern designs.
+2. REGISTER ADDRESS EXTRACTION: rs1 = inst[19:15], rs2 = inst[24:20], rd = inst[11:7]. These are direct bit fields in the instruction — no computation needed. The decoder also determines which source registers are actually used (some instructions only use rs1, not rs2).
 
-**Load forwarding from the store buffer:** Here's the tricky part. What if a load comes after a store to the same address, but the store hasn't been committed yet? The load can't read the cache — it would get stale data. Instead, the load must check the store buffer: if any entry has a matching address, forward the data directly. This is called store-to-load forwarding and is critical for correctness in code like:
+3. IMMEDIATE EXTRACTION: RISC-V has 6 immediate formats (I, S, B, U, J, and CSR). Each format packs the immediate bits in different locations to minimize the hardware cost of the register file read ports. The decoder reassembles and sign-extends the immediate into a 64-bit value.
 
-    sw x1, 0(x2)   // store to address A
-    lw x3, 0(x2)   // load from address A — must see the store's value
+4. FUNCTIONAL UNIT ASSIGNMENT: Each instruction goes to one functional unit: ALU (arithmetic/logic), Branch Unit (conditional branches, JAL, JALR), Load-Store Unit (LOAD/STORE), Multiply-Divide Unit (MUL/DIV), CSR Unit (system instructions), FPU (floating point if enabled). This assignment determines which reservation station the instruction waits in.
 
-The forwarding logic checks all store buffer entries for address matches. Partial matches (a 4-byte store followed by a 1-byte load at the same address) require extracting the correct byte — this is more complex than a full match.
+5. HAZARD DETECTION: In CVA6's scoreboard-based issue, the decode stage checks if the destination register of this instruction aliases with any in-flight instruction. If so, it stalls until the scoreboard clears the dependency.
 
-**Memory ordering:** Modern CPUs under TSO (Total Store Order, used by x86) allow a processor to see its own stores immediately (via the store buffer forward) but other processors see them only after they retire to cache. RISC-V uses RVWMO (Weak Memory Order), which is even more relaxed — loads and stores can be reordered in complex ways. FENCE instructions provide explicit ordering when needed. This matters enormously for concurrent code and lock-free data structures.
+6. COMPRESSED INSTRUCTION EXPANSION: If the C extension is enabled, 16-bit compressed instructions are expanded to their 32-bit equivalents here. The expansion is a combinational mapping — there's a 1:1 correspondence between each C.* instruction and its RV32/RV64 equivalent.
 
-**Load-store disambiguation:** In an out-of-order CPU, a load might execute before an older store if the store's address isn't known yet. If the addresses later turn out to alias, the load got the wrong data and must be re-executed. This is called a memory order violation and requires a pipeline squash and replay of the load and everything after it.`,
-    keyInsights: [
-      "Stores cannot write to cache until they commit (retire from ROB). Before that, they live in the store buffer to support speculative execution rollback.",
-      "Store-to-load forwarding: loads must check the store buffer for matching addresses before going to cache. Partial address matches (byte/halfword) require byte extraction logic.",
-      "TSO (x86) lets a thread see its own stores immediately via the store buffer, but other threads don't see them until retirement. This is why memory barriers exist.",
-      "RISC-V RVWMO is weaker than TSO — more reorderings are permitted, requiring explicit FENCE instructions for synchronization in concurrent code.",
-      "Memory order violations in OoO CPUs: when a speculative load gets wrong data due to an earlier store's address resolving late. Requires pipeline squash and replay."
+The output, scoreboard_entry_t, is the lingua franca of the CVA6 backend. It contains: pc, instruction word, operation type, functional unit, immediate, source/destination register addresses, exception information, and metadata flags (is_compressed, uses_fp, etc.). This struct flows from decode through issue, execute, and is finally consumed by commit.
+
+One subtle point: CVA6's id_stage also handles the issue side — reading operands from the register file and forwarding in-flight results. The name "id_stage" is slightly misleading; it really covers both Decode (D) and Operand Read (O) in a more traditional pipeline nomenclature.`,
+    keySignals: [
+      { name: "fetch_entry_i", direction: "input", explanation: "Raw instruction bundle from the frontend: instruction bits, PC, predicted next PC, fetch exceptions." },
+      { name: "fetch_entry_valid_i", direction: "input", explanation: "Frontend asserts this when fetch_entry_i holds a valid instruction. Decode must not consume the entry without this being asserted." },
+      { name: "fetch_entry_ready_o", direction: "output", explanation: "Decode asserts this when it can accept a new instruction. Deasserted when the scoreboard is full or a structural hazard is detected." },
+      { name: "issue_entry_o", direction: "output", explanation: "The decoded scoreboard_entry_t: fully decoded instruction with all fields populated, ready for the issue stage / scoreboard." },
+      { name: "issue_entry_valid_o", direction: "output", explanation: "Indicates issue_entry_o holds a valid decoded instruction ready for the issue stage." },
+      { name: "flush_i", direction: "input", explanation: "Clears any instruction currently being decoded. Used on branch misprediction and exception recovery." }
     ],
     snippets: [
       {
-        label: "4-entry Store Buffer with Load Forwarding",
+        label: "CVA6 id_stage.sv — Module Port Declaration (actual source)",
         language: "systemverilog",
-        code: `// Simplified store buffer with load forwarding
-// Stores wait here after execute until commit
+        annotation: "Notice how id_stage connects to both the frontend (upstream) and the issue/scoreboard (downstream).",
+        code: `module id_stage #(
+    parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    parameter type branchpredict_sbe_t  = logic,
+    parameter type exception_t          = logic,
+    parameter type fetch_entry_t        = logic,
+    parameter type scoreboard_entry_t   = logic  // OUTPUT: decoded instruction
+) (
+    input  logic   clk_i,
+    input  logic   rst_ni,
+    input  logic   flush_i,         // Squash instruction in-flight
+    input  logic   debug_req_i,     // Debug: may redirect to debug ROM
+
+    // === Upstream: from Frontend ===
+    input  fetch_entry_t [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_i,
+    input  logic         [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_valid_i,
+    output logic         [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_o,
+
+    // === Downstream: to Issue Stage / Scoreboard ===
+    output scoreboard_entry_t [CVA6Cfg.NrIssuePorts-1:0] issue_entry_o,
+    output logic              [CVA6Cfg.NrIssuePorts-1:0] issue_entry_valid_o,
+    output logic              [CVA6Cfg.NrIssuePorts-1:0] is_ctrl_flow_o, // is branch/jump?
+    input  logic              [CVA6Cfg.NrIssuePorts-1:0] issue_instr_ack_i,
+
+    // === Interrupt/exception interface ===
+    input  irq_ctrl_t          irq_ctrl_i,     // Pending interrupts
+    input  logic               tvm_i,          // Trap Virtual Memory (M-mode CSR)
+    input  logic               tw_i,           // Timeout Wait
+    input  logic               tsr_i           // Trap SRET
+);
+// Inside: decoder sub-module maps instruction bits → scoreboard_entry_t
+// scoreboard_entry_t fields include:
+//   pc, instruction, op (operation enum), fu (functional unit enum),
+//   rs1, rs2, rd, result (immediate or 0), use_imm, use_zimm,
+//   is_compressed, ex (exception struct: valid, cause, tval)`
+      }
+    ],
+    designDecisions: [
+      "CVA6 uses a parameterized scoreboard_entry_t struct as the universal instruction descriptor. This single struct flows through the entire backend — decode populates it, issue reads it, execute updates the result field, commit consumes it. One struct, one truth.",
+      "Compressed instruction expansion happens in decode, not in the frontend. This means the frontend always presents 32-bit aligned instruction words; decode handles the variable-length complexity. Simpler frontend, slightly more complex decode.",
+      "The illegal instruction check is complete in decode: if no valid RISC-V encoding matches the bit pattern, the instruction becomes an exception-carrying NOP. It flows through the pipeline normally and commits as an exception — maintaining precise exception semantics without special-casing the pipeline.",
+      "irq_ctrl_i feeds directly into decode. Interrupts in RISC-V are taken at instruction boundaries — the decode stage checks pending interrupts before each instruction and injects a special 'interrupt' scoreboard entry if an interrupt should be taken now.",
+      "is_ctrl_flow_o is a separate output (not inside scoreboard_entry_t) because the frontend needs to know immediately if it's processing a branch/jump to update the branch predictor state — before the full decode is used downstream."
+    ],
+    relatedQuestions: ["l1-q2", "l1-q6", "l1-q7", "l1-q8"]
+  },
+
+  // ─── STAGE 3: ISSUE / SCOREBOARD ─────────────────────────────────────────
+  {
+    id: "stage-03-issue",
+    stage: 3,
+    category: "Issue & Scoreboard",
+    title: "Stage 3 — Issue: Scoreboard & Out-of-Order Dispatch",
+    subtitle: "CVA6 core/issue_stage.sv + scoreboard.sv",
+    difficulty: "intermediate",
+    duration: "11 min",
+    summary: "The issue stage is CVA6's out-of-order heart. It tracks all in-flight instructions via a scoreboard, reads register file operands, handles forwarding, and dispatches instructions to functional units as soon as their dependencies are resolved.",
+    body: `CVA6 is a partially out-of-order processor. Instructions enter the issue stage in order, but they can be dispatched to functional units out-of-order if their operands are ready and the target functional unit is free. The scoreboard is the tracking mechanism that makes this safe.
+
+WHAT THE SCOREBOARD IS:
+A scoreboard is a table of in-flight instructions, each with a "result valid" bit. When an instruction is dispatched to a functional unit, it gets a scoreboard entry. When the functional unit completes, it writes the result back to the scoreboard and sets the result-valid bit. An instruction waiting for a result from an earlier instruction (RAW dependency) checks the scoreboard — if the producing instruction's result-valid bit is set, the waiting instruction can proceed.
+
+CVA6 uses a simplified scoreboard compared to Tomasulo's full algorithm. It tracks which physical registers have pending writes, and stalls any instruction that reads a register with a pending write. This is more conservative than Tomasulo (it may stall unnecessarily if two instructions write different registers that hash to the same tracking entry) but much simpler to implement.
+
+OPERAND READ AND FORWARDING:
+When an instruction is issued from the scoreboard, it reads its source operands (rs1, rs2) from the register file. But if an in-flight instruction is about to produce the value that rs1 needs, the scoreboard must forward that value instead. CVA6 checks:
+1. Is there a result on the functional unit's output bus right now that matches rs1? → Forward from writeback bus
+2. Is there a completed result in the scoreboard that matches rs1? → Forward from scoreboard
+3. Otherwise → use register file value
+
+FUNCTIONAL UNIT DISPATCH:
+Each functional unit (ALU, BU, LSU, MUL, CSR, FPU) has a valid/ready interface. The issue stage asserts valid to a unit when an instruction is ready to execute. The unit asserts ready when it can accept work. CVA6's ALU is fully pipelined (accepts every cycle). The MUL/DIV unit may take multiple cycles. The LSU handles memory ordering. Only one instruction per functional unit can be in-flight at a time in CVA6's design.
+
+IN-ORDER COMMIT CONSTRAINT:
+Even though instructions execute out-of-order, they must commit in-order. The scoreboard maintains a "commit pointer" that advances only when the oldest in-flight instruction's result is valid. This is the ROB (Reorder Buffer) concept — CVA6's scoreboard serves as a lightweight ROB. When the head entry has a valid result and no exception, it's presented to the commit stage.
+
+STALL CONDITIONS:
+The issue stage stalls when:
+- Scoreboard is full (all entries occupied by in-flight instructions)
+- A required functional unit is busy (structural hazard)
+- A source register has a pending write (RAW dependency, non-forwarded)
+- A CSR instruction is encountered (CVA6 serializes CSR access for correctness)`,
+    keySignals: [
+      { name: "decoded_instr_i", direction: "input", explanation: "scoreboard_entry_t from decode: the fully decoded instruction ready to enter the scoreboard." },
+      { name: "rs1_forwarding_o", direction: "output", explanation: "Forwarded value for source register 1 — either from the register file or from a completing functional unit. Sent to execute stage." },
+      { name: "rs2_forwarding_o", direction: "output", explanation: "Forwarded value for source register 2. Same forwarding logic as rs1." },
+      { name: "fu_data_o", direction: "output", explanation: "The fully-operand-resolved instruction bundle dispatched to the functional units. Contains the operation, both operand values (possibly forwarded), and the scoreboard tag." },
+      { name: "commit_instr_o", direction: "output", explanation: "The head of the scoreboard — the oldest in-flight instruction. Presented to commit stage when result is valid. Commit stage acks when it commits, freeing the scoreboard entry." },
+      { name: "wb_*", direction: "input", explanation: "Writeback buses from all functional units. When a unit finishes, it broadcasts its tag + result here. The scoreboard captures this and marks the entry as complete." }
+    ],
+    snippets: [
+      {
+        label: "CVA6 Scoreboard — Key Concepts in Simplified RTL",
+        language: "systemverilog",
+        annotation: "This shows the core tracking logic — not verbatim CVA6 code but faithful to its architecture.",
+        code: `// Simplified CVA6-style scoreboard
+// Tracks in-flight instructions and enables out-of-order completion
 
 typedef struct packed {
-  logic [63:0] addr;
-  logic [63:0] data;
-  logic [2:0]  size;   // 0=byte, 1=half, 2=word, 3=double
-  logic        valid;
-  logic        committed; // Set when ROB commits, cleared after cache write
-} sb_entry_t;
+  scoreboard_entry_t  sbe;         // Decoded instruction
+  logic [XLEN-1:0]    result;      // Written by functional unit on completion
+  logic               issued;      // Dispatched to functional unit
+  logic               result_valid;// Functional unit has written result
+  logic               valid;       // Entry is occupied
+} sb_slot_t;
 
-module store_buffer #(parameter int DEPTH = 4) (
-  input  logic        clk_i, rst_ni,
-  // Store allocation (from execute stage)
-  input  logic        store_valid_i,
-  input  logic [63:0] store_addr_i,
-  input  logic [63:0] store_data_i,
-  input  logic [2:0]  store_size_i,
-  // Load forwarding check
-  input  logic        load_valid_i,
-  input  logic [63:0] load_addr_i,
-  output logic        fwd_valid_o,   // Forwarding hit
-  output logic [63:0] fwd_data_o,   // Forwarded data
-  // Commit from ROB
-  input  logic        commit_i,
-  output logic        full_o
-);
-  sb_entry_t buf [DEPTH];
-  logic [$clog2(DEPTH):0] wr_ptr, rd_ptr;
+sb_slot_t [SB_DEPTH-1:0] sb;
+logic [$clog2(SB_DEPTH)-1:0] issue_ptr;   // Next empty slot
+logic [$clog2(SB_DEPTH)-1:0] commit_ptr;  // Oldest instruction (head)
 
-  assign full_o = (wr_ptr - rd_ptr) == DEPTH;
+// ISSUE: allocate scoreboard entry when decode presents new instruction
+always_ff @(posedge clk_i) begin
+  if (issue_valid && !sb_full) begin
+    sb[issue_ptr].sbe          <= decoded_instr_i;
+    sb[issue_ptr].valid        <= 1'b1;
+    sb[issue_ptr].issued       <= 1'b0;
+    sb[issue_ptr].result_valid <= 1'b0;
+    issue_ptr <= issue_ptr + 1;
+  end
+end
 
-  // Store allocation
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      wr_ptr <= '0; rd_ptr <= '0;
-      for (int i = 0; i < DEPTH; i++) buf[i].valid <= 1'b0;
-    end else begin
-      if (store_valid_i && !full_o) begin
-        buf[wr_ptr[$clog2(DEPTH)-1:0]] <= '{store_addr_i, store_data_i,
-                                             store_size_i, 1'b1, 1'b0};
-        wr_ptr <= wr_ptr + 1;
-      end
-      // On commit, mark entry as committed; a separate agent drains to cache
-      if (commit_i && buf[rd_ptr[$clog2(DEPTH)-1:0]].valid) begin
-        buf[rd_ptr[$clog2(DEPTH)-1:0]].committed <= 1'b1;
-        rd_ptr <= rd_ptr + 1;
-      end
+// WRITEBACK: when a FU completes, find its scoreboard entry and record result
+always_ff @(posedge clk_i) begin
+  for (int i = 0; i < SB_DEPTH; i++) begin
+    if (sb[i].valid && wb_valid_i && sb[i].sbe.trans_id == wb_trans_id_i) begin
+      sb[i].result       <= wb_result_i;
+      sb[i].result_valid <= 1'b1;
     end
   end
+end
 
-  // Load forwarding: combinational search for youngest matching store
-  always_comb begin
-    fwd_valid_o = 1'b0; fwd_data_o = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      if (buf[i].valid && load_valid_i &&
-          buf[i].addr == load_addr_i) begin // Full-word match simplified
-        fwd_valid_o = 1'b1;
-        fwd_data_o  = buf[i].data;
-      end
-    end
+// COMMIT: present head entry to commit stage when result is ready
+assign commit_instr_o       = sb[commit_ptr].sbe;
+assign commit_instr_valid_o = sb[commit_ptr].valid && sb[commit_ptr].result_valid;
+
+// FORWARDING: check if rs1 matches any completing writeback
+always_comb begin
+  rs1_fwd = regfile_rs1; // default: use register file
+  for (int i = 0; i < SB_DEPTH; i++) begin
+    if (sb[i].valid && sb[i].result_valid && sb[i].sbe.rd == rs1_addr)
+      rs1_fwd = sb[i].result; // Forward completed result
   end
-endmodule`
+  // Also check live writeback bus (result arriving this cycle)
+  if (wb_valid_i && wb_rd_i == rs1_addr)
+    rs1_fwd = wb_result_i;
+end`
       }
     ],
-    relatedQuestions: ["l3-q3", "l2-q3"]
+    designDecisions: [
+      "CVA6's scoreboard is register-indexed (tracks pending writes per register), not a full Tomasulo reservation station. Simpler hardware, slightly more conservative stalling — acceptable for a research/embedded core.",
+      "trans_id: every instruction gets a unique transaction ID when it enters the scoreboard. Functional units use this ID to route their result back to the correct scoreboard entry — there's no need to match on register address at writeback time.",
+      "CVA6 commits up to NrCommitPorts instructions per cycle (configurable). The commit logic checks that the head N entries of the scoreboard all have valid results before committing them as a group.",
+      "CSR instructions are serialized — the issue stage stalls all other instructions until a CSR instruction commits. This ensures CSR side effects (changing privilege level, disabling interrupts) are visible to subsequent instructions without complex reasoning about ordering.",
+      "The scoreboard also handles the ROB function: it maintains in-order tracking for precise exception support. If the head entry has an exception flag set, the commit stage takes the exception rather than committing the instruction."
+    ],
+    relatedQuestions: ["l3-q1", "l2-q1", "l3-q5", "l1-q3"]
   },
 
+  // ─── STAGE 4: EXECUTE ─────────────────────────────────────────────────────
   {
-    id: "lesson-06",
-    category: "Memory Subsystem",
-    title: "Cache Architecture: The Memory Hierarchy in Silicon",
+    id: "stage-04-execute",
+    stage: 4,
+    category: "Execute",
+    title: "Stage 4 — Execute: ALU, Branch Unit & Load-Store Unit",
+    subtitle: "CVA6 core/ex_stage.sv",
     difficulty: "intermediate",
-    duration: "10 min read",
-    summary: "The gap between CPU speed and DRAM latency is 200×. Caches bridge that gap — here's how tag arrays, set-associativity, and replacement policy work at the RTL level.",
-    body: `The single most important performance ratio in computer architecture: a modern CPU executes instructions in ~0.3 nanoseconds (3+ GHz), but a DRAM access takes 60–100 nanoseconds. That's a 200× gap. Without caches, every memory instruction would stall the pipeline for 200 cycles. Nothing else you do in the CPU would matter.
+    duration: "10 min",
+    summary: "The execute stage is where instructions actually do work: the ALU computes, the branch unit resolves direction and target, and the LSU begins the memory access sequence. All functional units run in parallel.",
+    body: `The execute stage (ex_stage.sv in CVA6) is an orchestrator — it instantiates all the functional units and routes instructions from the issue stage to the appropriate unit, then collects results and routes them back to the scoreboard writeback buses.
 
-Caches work by exploiting two locality properties:
-- **Temporal locality**: recently accessed data will likely be accessed again soon
-- **Spatial locality**: if you access address A, you'll likely access A+4, A+8 soon
+FUNCTIONAL UNITS IN CVA6'S EXECUTE STAGE:
 
-**Cache Anatomy:** A cache is organized as S sets, each with W ways (W-way set-associative). Each way holds one cache line (typically 64 bytes). For each line, there's a tag (high-order bits of the address), valid bit, dirty bit (for write-back), and the data array.
+ALU (Arithmetic-Logic Unit): Handles all integer arithmetic (ADD, SUB, AND, OR, XOR, shifts), comparisons (SLT, SLTU), and LUI/AUIPC. Fully combinational — result is ready the same cycle the instruction is dispatched. No pipeline registers inside the ALU itself in CVA6's base configuration. This means the ALU result can be forwarded to the NEXT instruction without any latency.
 
-**Address Decomposition:** Given a 64-bit address accessing a 32KB, 4-way, 64B-line cache:
-- Offset bits [5:0]: selects byte within a 64-byte cache line (6 bits)
-- Index bits [11:6]: selects which of the 128 sets (7 bits, since 32KB/4-way/64B = 128 sets)
-- Tag bits [63:12]: stored in the tag array to verify a hit
+Branch Unit (BU): Handles conditional branches (BEQ, BNE, BLT, BGE, BLTU, BGEU), JAL, and JALR. The BU computes the branch condition (same logic as ALU compare), computes the actual target PC (base + offset, or rs1 + offset for JALR), compares with the predicted target from the frontend, and signals resolved_branch_o back to the frontend. If the prediction was wrong — wrong direction or wrong target — it raises a misprediction flush.
 
-**Cache Lookup:** On every load/store, the pipeline: (1) extracts index bits and looks up all 4 tag-array entries in parallel, (2) compares each stored tag against the address tag bits, (3) if any match and valid bit is set → hit, read/write data from that way. If no match → miss, fetch line from L2.
+Load-Store Unit (LSU): The most complex functional unit. Handles all LOAD and STORE instructions. Steps:
+  1. Address generation: rs1 + sign_extended_imm (done in EX stage, this cycle)
+  2. TLB lookup: virtual → physical address translation (1–2 cycles if TLB hits)
+  3. D-cache access: read or write (1 cycle on hit, many cycles on miss)
+  4. Data alignment: extracted byte/halfword/word from the 64-bit cache line
+The LSU has its own internal pipeline and may take 3–50+ cycles depending on cache behavior. It interacts with the D-cache via dcache_req_o/dcache_req_i handshake interfaces.
 
-**Replacement Policy:** On a miss, if all ways in the target set are valid, one must be evicted. LRU (Least Recently Used) is optimal but expensive to implement exactly for 4+ ways — you'd need to maintain a total order. PLRU (Pseudo-LRU) uses a binary tree of bits (3 bits for 4-way) to approximate LRU at much lower cost.
+Multiply-Divide Unit (MDU): Handles MUL, MULH, DIV, DIVU, REM, REMU. Multiply typically takes 2–3 cycles (Booth's algorithm). Division is iterative — 32–64 cycles for long division. The MDU stalls the issue stage while in progress.
 
-**Write Policies:**
-- Write-through: every store immediately writes to both cache and next-level memory. Simple, but burns memory bandwidth.
-- Write-back: stores update the cache only; the line is written to memory only when evicted (if dirty bit is set). More efficient, requires dirty bit tracking and writeback on eviction.
+CSR Unit: Handles system instructions (CSRRW, CSRRS, ECALL, EBREAK, MRET, SRET, WFI, FENCE). These interact with the privilege controller and CSR register file.
 
-**Real latency numbers** (rough, 3GHz CPU, 28nm):
-- L1 hit: 4 cycles (~1.3 ns)
-- L2 hit: 12 cycles (~4 ns)  
-- L3 hit: 40 cycles (~13 ns)
-- DRAM: 200+ cycles (~65+ ns)
+FORWARDING FROM EX TO ISSUE:
+The execute stage outputs rs1_forwarding_o and rs2_forwarding_o back to the issue stage. These carry the ALU result from the current cycle, enabling the issue stage to forward to the NEXT instruction's operands without going through the register file or scoreboard.
 
-This is why L1 cache miss rate is the most important microarchitecture metric. A 1% L1 miss rate on a load-heavy workload can reduce performance by 20-30%.`,
-    keyInsights: [
-      "The 200× DRAM latency gap is why caches exist. Without them, a 3 GHz CPU would effectively run at 15 MHz.",
-      "Address decomposition: [tag | index | offset]. Index selects the set (parallel tag array lookup), tag verifies the hit, offset selects the byte.",
-      "Set-associativity reduces conflict misses at the cost of more tag comparators and a replacement policy. 4-way is the sweet spot for most L1 caches.",
-      "PLRU uses a 3-bit binary tree to approximate LRU for 4 ways — O(log N) bits instead of O(N log N) for exact LRU.",
-      "Write-back is more bandwidth-efficient than write-through but requires dirty bit tracking and cache-line writeback on eviction."
+BRANCH MISPREDICTION:
+When resolved_branch_o.is_mispredict is asserted, the controller module asserts flush_i to the frontend and kills all instructions younger than the mispredicted branch in the scoreboard. The frontend restarts from resolved_branch_o.target_address.`,
+    keySignals: [
+      { name: "fu_data_i", direction: "input", explanation: "The instruction bundle from issue: operation type, operand A (rs1 value or forwarded), operand B (rs2 value, immediate, or forwarded), transaction ID, destination register." },
+      { name: "rs1_forwarding_i / rs2_forwarding_i", direction: "input", explanation: "Forwarded operand values from the issue stage's scoreboard scan. The execute stage receives pre-resolved operands — it does not do its own forwarding lookup." },
+      { name: "resolved_branch_o", direction: "output", explanation: "Branch resolution result: actual target PC, actual direction (taken/not-taken), whether it was mispredicted, the original predicted PC. Frontend and controller consume this." },
+      { name: "alu_result_ex_id_o", direction: "output", explanation: "ALU result forwarded directly back to the issue stage for back-to-back ALU→ALU forwarding. This is the critical 1-cycle forwarding path." },
+      { name: "dcache_req_o", direction: "output", explanation: "Load/store request to the D-cache: physical address (post-TLB), operation (read/write), data (for stores), size. Uses a valid/ready handshake." },
+      { name: "dcache_req_i", direction: "input", explanation: "D-cache response: data (for loads), valid/miss indicator. On a miss, the cache fetches the line from L2 and asserts valid when data is ready." }
     ],
     snippets: [
       {
-        label: "4-way Set-Associative Cache — Tag Lookup and Hit Detection",
+        label: "CVA6 ex_stage.sv — Module Port Declaration (actual source)",
         language: "systemverilog",
-        code: `// 4-way set-associative cache tag array lookup
-// 32KB total, 64B lines → 128 sets, 4 ways
-// Address[5:0]=offset, [11:6]=index, [63:12]=tag
+        annotation: "Every functional unit has its own valid/ready dispatch port. Notice rs1/rs2 forwarding both IN (from issue) and OUT (ALU result back to issue).",
+        code: `module ex_stage
+  import ariane_pkg::*;
+#(
+    parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    parameter type bp_resolve_t   = logic,
+    parameter type fu_data_t      = logic,
+    parameter type dcache_req_i_t = logic,
+    parameter type dcache_req_o_t = logic
+) (
+    input  logic   clk_i,
+    input  logic   rst_ni,
+    input  logic   flush_i,
 
-localparam int SETS      = 128;
-localparam int WAYS      = 4;
-localparam int LINE_BITS = 6;   // log2(64 bytes)
-localparam int IDX_BITS  = 7;   // log2(128 sets)
-localparam int TAG_BITS  = 64 - IDX_BITS - LINE_BITS; // 51 bits
+    // === Forwarded operands from Issue stage ===
+    input  logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.VLEN-1:0] rs1_forwarding_i,
+    input  logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.VLEN-1:0] rs2_forwarding_i,
 
-typedef struct packed {
-  logic [TAG_BITS-1:0] tag;
-  logic                valid;
-  logic                dirty;
-} tag_entry_t;
+    // === Instruction dispatch to functional units ===
+    input  fu_data_t [CVA6Cfg.NrIssuePorts-1:0]  fu_data_i,  // Op + operands
+    input  logic     [CVA6Cfg.NrIssuePorts-1:0]  alu_valid_i, // Dispatch to ALU
+    output logic     [CVA6Cfg.NrIssuePorts-1:0]  alu_ready_o, // ALU ready
+    input  logic                                  lsu_valid_i, // Dispatch to LSU
+    output logic                                  lsu_ready_o, // LSU ready
+    input  logic                                  mult_valid_i,// Dispatch to MUL
+    output logic                                  mult_ready_o,
 
-module cache_tag_lookup (
-  input  logic [63:0]   req_addr,
-  input  tag_entry_t    tag_array [SETS][WAYS], // tag RAM read output
-  output logic          hit,
-  output logic [1:0]    hit_way,   // which way hit (0-3)
-  output logic [TAG_BITS-1:0] req_tag,
-  output logic [IDX_BITS-1:0] req_idx
-);
-  assign req_idx = req_addr[LINE_BITS+IDX_BITS-1 : LINE_BITS];
-  assign req_tag = req_addr[63 : LINE_BITS+IDX_BITS];
+    // === ALU → Issue back-forwarding (critical path!) ===
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] alu_result_ex_id_o,
 
-  always_comb begin
-    hit     = 1'b0;
-    hit_way = 2'b00;
-    for (int w = 0; w < WAYS; w++) begin
-      if (tag_array[req_idx][w].valid &&
-          tag_array[req_idx][w].tag == req_tag) begin
-        hit     = 1'b1;
-        hit_way = w[1:0];
-      end
-    end
-  end
-endmodule`
+    // === Branch resolution → Frontend ===
+    output bp_resolve_t    resolved_branch_o, // Actual branch outcome
+
+    // === LSU → D-Cache ===
+    output dcache_req_o_t  dcache_req_ports_o [3], // 3 LSU ports: load, store, amo
+    input  dcache_req_i_t  dcache_req_ports_i [3],
+
+    // === Writeback to Scoreboard ===
+    output logic [CVA6Cfg.NrIssuePorts-1:0]           wbdata_valid_o,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][XLEN-1:0] wbdata_o,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][TRANS_ID_BITS-1:0] wbdata_trans_id_o
+);`
       }
     ],
-    relatedQuestions: ["l2-q3", "l4-q5", "l3-q4"]
+    designDecisions: [
+      "The ALU is combinational (0-cycle latency) in CVA6. This is a deliberate choice for a mid-range core: it simplifies forwarding (no pipeline registers to navigate) at the cost of a potentially longer critical path through the ALU.",
+      "Three D-cache ports (load, store, AMO) allow the LSU to handle concurrent load and store requests. In practice, load-after-store ordering is enforced by the LSU's internal store buffer — loads check the store buffer before going to cache.",
+      "resolved_branch_o goes directly to the frontend, bypassing the commit stage. Branch misprediction recovery is handled speculatively — no need to wait for the branch to commit before redirecting the PC.",
+      "The fu_data_t struct carries a trans_id field (transaction ID). When the functional unit writes back its result, it includes the trans_id so the scoreboard can find the right entry. This decouples writeback routing from register addresses.",
+      "alu_valid_i is one bit per issue port — in 2-wide CVA6, two ALU instructions can be dispatched simultaneously to two parallel ALU instances inside ex_stage."
+    ],
+    relatedQuestions: ["l2-q1", "l1-q4", "l3-q3", "l2-q3"]
   },
 
+  // ─── STAGE 5: COMMIT ──────────────────────────────────────────────────────
   {
-    id: "lesson-07",
-    category: "Advanced RTL",
-    title: "Clock Domain Crossing: The Silent Killer of Silicon",
+    id: "stage-05-commit",
+    stage: 5,
+    category: "Commit",
+    title: "Stage 5 — Commit: Architectural State Update",
+    subtitle: "CVA6 core/commit_stage.sv",
     difficulty: "intermediate",
-    duration: "10 min read",
-    summary: "Metastability has killed real silicon. Here's the physics, the 2-FF synchronizer, why it's not enough for multi-bit data, and the Gray-code async FIFO that actually works.",
-    body: `CDC bugs are insidious: they may not show up in simulation, they may not appear in lab bring-up, and then they silently corrupt data in production at low probability. When they do manifest, the failure looks random and is nearly impossible to debug. I have seen tapeouts delayed six months because of a single missed CDC crossing. This lesson is not optional.
+    duration: "10 min",
+    summary: "Commit is where speculation ends and reality begins. Only here are results written to the architectural register file, stores sent to cache, and exceptions taken. Everything before this point is reversible.",
+    body: `The commit stage is the last guardian of architectural correctness. An instruction that reaches the commit stage has executed, produced a result, and is the oldest in-flight instruction in the scoreboard. At this point, the CPU must decide: commit the instruction's effects to architectural state, or signal an exception and redirect to the handler.
 
-**What is metastability?** A flip-flop is a bistable circuit — it has two stable states (0 and 1). If you violate its setup or hold time (by sampling data too close to the clock edge), the output enters a metastable state: a voltage between 0 and 1 that is neither. The FF will eventually resolve to 0 or 1, but the resolution time is unbounded in theory (exponentially distributed in practice). If the metastable output is sampled again before it resolves, the receiving circuit sees garbage.
+THE COMMIT STAGE PERFORMS:
 
-**The 2-FF synchronizer:** The standard solution for single-bit CDC. Two back-to-back flip-flops in the destination clock domain. The first FF might go metastable, but it has a full clock period to resolve before the second FF samples it. The MTBF (mean time between failures) for a well-designed synchronizer is typically billions of years at normal clock frequencies. This is safe enough.
+1. REGISTER FILE WRITE: For integer instructions, the result from the scoreboard entry is written to the register file at the destination address (waddr_o, wdata_o, we_gpr_o). This is the moment the architectural register is updated. Before this, the result only exists in the scoreboard.
 
-Critical rule: the output of the first synchronizer FF must not fan out to anything except the second synchronizer FF. Any combinational logic on a potentially-metastable signal can propagate glitches throughout the design.
+2. STORE COMMIT: Stores don't write to the D-cache during execute — they write to a store buffer. The commit stage signals the LSU to drain the store buffer entry to the actual cache. This ensures stores only become visible to other cores after the instruction has committed (fundamental to memory consistency).
 
-**Why you cannot synchronize multi-bit binary data directly:** Imagine synchronizing a 4-bit binary counter. The counter transitions from 0111 (7) to 1000 (8) — all 4 bits change simultaneously. The destination clock might capture some bits in the new state and some in the old state: 0000, 0001, 0111, 1000, or any combination. You'd read a value of 0 or 15 instead of 7 or 8.
+3. EXCEPTION HANDLING: If the scoreboard head entry has an exception (ex.valid = 1), the commit stage:
+   — Does NOT write any register or commit any store
+   — Asserts exception_o with the cause and tval (trap value)
+   — The controller responds by saving the exception PC to mepc/sepc, setting the cause in mcause/scause, and redirecting the frontend to the trap vector
+   — All younger instructions in the scoreboard are squashed
 
-**Gray code solves this:** Gray code guarantees only 1 bit changes between consecutive values. Synchronizing a Gray-coded counter is safe — even if the transition is captured mid-flight, you see either the old or new value (off by one at most), never a garbage intermediate.
+4. CSR UPDATES: CSR-type instructions (CSRRW, etc.) update the CSR register file at commit time. This includes privilege-changing instructions (MRET, SRET) which modify the privilege level and return-from-exception PC.
 
-**Async FIFO architecture:** Use two independent counters: a write pointer (in the write clock domain) and a read pointer (in the read clock domain). Gray-code both pointers. Synchronize the write pointer to the read domain (for empty detection) and the read pointer to the write domain (for full detection). The extra-bit trick distinguishes full from empty: full when Gray(wr_ptr) synchronized to read domain shows the MSB differs from rd_ptr but all other bits match.
+5. INTERRUPT INJECTION: Pending external interrupts are taken at commit boundaries. If an interrupt is pending and enabled, the commit stage injects an exception with the appropriate interrupt cause code.
 
-**CDC verification:** Simulation cannot find metastability. You need dedicated CDC analysis tools (Mentor Questa CDC, Cadence JasperGold CDC) that statically analyze the netlist for unsynchronized crossings. These are non-negotiable in any real tapeout flow.`,
-    keyInsights: [
-      "Metastability is physical — a flip-flop in an intermediate voltage state. Resolution time is exponentially distributed; the 2-FF synchronizer gives a full clock period for resolution.",
-      "Never fan out the output of the first synchronizer FF to combinational logic. Metastable signals can propagate glitches and cause multi-bit corruption downstream.",
-      "Gray code for multi-bit CDC: guarantees only 1 bit changes per increment, so a mid-transition capture gives old or new value, never an invalid intermediate.",
-      "Async FIFO: separate read/write pointers in separate clock domains, Gray-coded before synchronization. The extra MSB bit distinguishes full from empty.",
-      "CDC bugs survive simulation and board bring-up, then manifest as rare random failures in production. Only static CDC analysis tools can guarantee correctness."
+6. FLOATING POINT STATE: When FP instructions commit, dirty_fp_state_o is asserted to update the FS field in the mstatus CSR. This signals to the OS that FP registers have been modified and must be saved on context switch.
+
+WHY IN-ORDER COMMIT MATTERS FOR PRECISE EXCEPTIONS:
+Imagine a load instruction causes a page fault, but a branch instruction that executed earlier (and completed) was actually mispredicted — the load should never have executed. With in-order commit, the branch's misprediction is detected before the load reaches the commit stage (younger instructions can't commit before older ones), so the load's page fault is never reported. Without in-order commit, you'd report an exception for an instruction that "shouldn't have run" — catastrophically wrong.
+
+COMMIT RATE:
+CVA6 commits NrCommitPorts instructions per cycle (typically 1 or 2). The bottleneck is usually the scoreboard head — if the oldest instruction is a long-latency divide or a cache miss, commit stalls entirely until it completes. This is the "head-of-line blocking" problem in in-order commit, and a key motivation for larger ROBs in high-performance designs.`,
+    keySignals: [
+      { name: "commit_instr_i", direction: "input", explanation: "The NrCommitPorts oldest scoreboard entries — candidates for commit. Provided by the issue/scoreboard stage." },
+      { name: "commit_ack_o", direction: "output", explanation: "Acknowledge that the instruction at port N is being committed this cycle. This frees the scoreboard entry." },
+      { name: "waddr_o / wdata_o / we_gpr_o", direction: "output", explanation: "Register file write: address, data, and write-enable. This is the only place the architectural register file is updated." },
+      { name: "exception_o", direction: "output", explanation: "Exception bundle: valid bit, cause code, tval (faulting address or instruction bits). Consumed by the controller to initiate exception handling." },
+      { name: "commit_lsu_o", direction: "output", explanation: "Signal to the LSU to drain the head store buffer entry to cache. Only asserted when a STORE instruction commits." },
+      { name: "dirty_fp_state_o", direction: "output", explanation: "Asserted when an FP instruction commits — tells the CSR file to set mstatus.FS = Dirty, indicating the OS must save FP registers on context switch." },
+      { name: "single_step_i", direction: "input", explanation: "Debug single-step mode. When set, the commit stage takes a debug exception after committing exactly one instruction, transferring control to the debugger." }
     ],
     snippets: [
       {
-        label: "2-FF Synchronizer + Gray-coded CDC FIFO Pointer Sync",
+        label: "CVA6 commit_stage.sv — Module Port Declaration (actual source)",
         language: "systemverilog",
-        code: `// 2-FF synchronizer — single bit crossing
-// dst_clk domain receives an async signal from src_clk domain
-module sync_ff #(parameter int STAGES = 2) (
-  input  logic clk_i, rst_ni,
-  input  logic din_i,   // Async input from another domain
-  output logic dout_o   // Synchronized output, safe to use in clk_i domain
-);
-  logic [STAGES-1:0] sync_q;
-  // Synthesis attribute to keep FFs back-to-back (no logic between them)
-  (* ASYNC_REG = "TRUE" *)
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) sync_q <= '0;
-    else         sync_q <= {sync_q[STAGES-2:0], din_i};
-  end
-  assign dout_o = sync_q[STAGES-1];
-endmodule
+        annotation: "Notice how every architectural side effect (regfile write, store drain, CSR update, exception) goes through commit_stage. Nothing bypasses it.",
+        code: `module commit_stage
+  import ariane_pkg::*;
+#(
+    parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    parameter type exception_t        = logic,
+    parameter type scoreboard_entry_t = logic
+) (
+    input  logic   clk_i,
+    input  logic   rst_ni,
+    input  logic   halt_i,          // Don't commit (WFI / debug)
+    input  logic   flush_dcache_i,  // Cache flush in progress — hold stores
 
-// Gray-code pointer synchronization for async FIFO
-// Shows write pointer crossing to read clock domain (for empty flag)
-module cdc_ptr_sync #(parameter int PTR_W = 4) (
-  input  logic             rd_clk_i, rd_rst_ni,
-  input  logic [PTR_W-1:0] wr_ptr_gray_i,  // Gray-coded write pointer
-  output logic [PTR_W-1:0] wr_ptr_gray_sync_o // Synced to read domain
-);
-  logic [PTR_W-1:0] sync_q [2];
-  (* ASYNC_REG = "TRUE" *)
-  always_ff @(posedge rd_clk_i or negedge rd_rst_ni) begin
-    if (!rd_rst_ni) begin
-      sync_q[0] <= '0; sync_q[1] <= '0;
-    end else begin
-      sync_q[0] <= wr_ptr_gray_i;   // First sync stage (may be metastable)
-      sync_q[1] <= sync_q[0];        // Second sync stage (resolved)
-    end
-  end
-  assign wr_ptr_gray_sync_o = sync_q[1];
-endmodule`
+    // === From Issue/Scoreboard: instructions ready to commit ===
+    input  scoreboard_entry_t [CVA6Cfg.NrCommitPorts-1:0] commit_instr_i,
+    input  logic              [CVA6Cfg.NrCommitPorts-1:0] commit_drop_i,   // squashed
+    output logic              [CVA6Cfg.NrCommitPorts-1:0] commit_ack_o,    // consumed
+
+    // === Register File Writes (architectural state update) ===
+    output logic [CVA6Cfg.NrCommitPorts-1:0][4:0]        waddr_o,
+    output logic [CVA6Cfg.NrCommitPorts-1:0][XLEN-1:0]   wdata_o,
+    output logic [CVA6Cfg.NrCommitPorts-1:0]              we_gpr_o,   // int write enable
+    output logic [CVA6Cfg.NrCommitPorts-1:0]              we_fpr_o,   // float write enable
+
+    // === Exception Output → Controller ===
+    output exception_t  exception_o,      // cause + tval for exception handling
+
+    // === CSR / Privilege ===
+    output logic        dirty_fp_state_o, // FP registers modified
+    output logic        single_step_o,    // Debug: single-step exception
+    input  logic        single_step_i,    // Debug: single-step requested
+
+    // === Store Commit → LSU ===
+    output logic        commit_lsu_o,     // Drain head store buffer entry
+    input  logic        commit_lsu_ready_i,// LSU ready to accept store drain
+
+    // === Commit Acknowledgement for CSR port ===
+    output logic [CVA6Cfg.NrCommitPorts-1:0] commit_macro_ack_o
+);`
       }
     ],
-    relatedQuestions: ["l2-q2", "l4-q6", "l4-q7", "l4-q8", "l1-q5"]
-  },
-
-  {
-    id: "lesson-08",
-    category: "Out-of-Order Execution",
-    title: "The Reorder Buffer: Out-of-Order Without Losing Your Mind",
-    difficulty: "advanced",
-    duration: "12 min read",
-    summary: "The ROB is the beating heart of every modern OoO processor. It enables precise exceptions, branch recovery, and in-order retirement while letting execution run wild out-of-order.",
-    body: `Out-of-order execution is one of the most powerful techniques in CPU microarchitecture — and the Reorder Buffer is what makes it safe. Without the ROB, out-of-order execution would be impossible to implement correctly. Here's why.
-
-**The core problem:** In an in-order pipeline, when an exception occurs (page fault, illegal instruction), we know exactly which instruction caused it — it's the one currently in the EX or MEM stage. All earlier instructions have committed. In an out-of-order machine, multiple instructions execute simultaneously in different order. If an exception occurs, we need to know the precise architectural state at the faulting instruction — which means all earlier instructions must have committed and no later instructions must have modified state. This is called "precise exceptions."
-
-**The ROB as a circular buffer:** The ROB holds all in-flight instructions in program order. Think of it as a queue where:
-- The tail (write end) is where new instructions are allocated at dispatch, in program order
-- The head (read end) is where instructions retire (commit) in program order
-- Instructions execute out-of-order but commit in-order from the head
-
-Each ROB entry holds: the instruction's destination register, the computed result (or a pointer to it in the physical register file), a "done" bit set when execution completes, an exception bit if the instruction caused a fault, and the exception information (TVAL, exception code).
-
-**Commit logic:** Every cycle, check the head of the ROB. If the head entry's done bit is set and there's no exception, commit: write the result to the architectural register file (or free the old physical register), advance the head pointer. If there's an exception: squash all instructions from head to tail (clear done bits, free physical registers), redirect PC to the exception handler, set CSRs (mcause, mepc, mtval), and start fresh from the handler.
-
-**Branch misprediction recovery:** When a branch resolves incorrectly, everything allocated in the ROB after the mispredicted branch must be squashed. The ROB tail pointer snaps back to the branch's ROB entry. Physical registers allocated for squashed instructions return to the free list. This is why ROBs have "checkpoints" of the RAT state at each branch — to restore the rename map instantly without replaying all committed instructions.
-
-**ROB sizing:** Modern high-performance CPUs have 256–512 ROB entries (Intel Skylake: 224, AMD Zen 4: 320). Larger ROBs capture more ILP (instructions can execute further ahead), but each entry costs area and the commit/wakeup logic scales with ROB depth. For a student or research CPU (CVA6, BOOM), 32–64 entries is typical.
-
-The ROB is arguably the most complex single structure in the CPU. If you understand it deeply — the allocation, writeback, commit, and squash paths — you understand out-of-order execution.`,
-    keyInsights: [
-      "The ROB enables precise exceptions by enforcing in-order commit: no instruction commits until all older instructions have committed cleanly.",
-      "Allocate in-order at tail (dispatch), execute out-of-order, commit in-order from head. The circular buffer structure makes this efficient.",
-      "Branch misprediction recovery: squash ROB from mispredicted branch to tail, restore RAT checkpoint, return physical registers to free list, redirect PC.",
-      "ROB sizing is a key microarchitectural parameter: larger = more ILP potential, but more area and power. Modern CPUs: 256–512 entries.",
-      "The 'done' bit in each ROB entry is set by the execution unit that completes the instruction. The commit logic checks the head entry's done bit every cycle."
+    designDecisions: [
+      "commit_drop_i allows the scoreboard to mark an entry as 'committed but squashed' — this happens for instructions on a mispredicted path that already completed execution. They must be removed from the scoreboard without writing to registers.",
+      "The LSU store buffer drain is rate-limited by commit_lsu_ready_i. If the D-cache is busy (cache miss on a previous store), the store buffer drain stalls, which can back up to stalling commit. This is a performance bottleneck in write-heavy workloads.",
+      "flush_dcache_i temporarily blocks store commits. During a fence.i (instruction cache flush), the pipeline must ensure all stores are committed to cache before the I-cache is invalidated — otherwise a JIT-compiled instruction might not be visible to fetch.",
+      "exception_o carries the full exception struct: valid, cause (encoded per RISC-V spec), and tval (the faulting address for load/store faults, or the instruction word for illegal instruction faults). The controller uses this to populate mepc, mcause, and mtval CSRs.",
+      "NrCommitPorts determines the peak commit bandwidth. 2 commits/cycle requires checking that both head scoreboard entries are valid, non-exception, and independent (no structural conflicts in the register file write ports)."
     ],
-    snippets: [
-      {
-        label: "ROB Entry Structure + Commit Stage Logic",
-        language: "systemverilog",
-        code: `// Reorder Buffer entry and commit logic
-typedef struct packed {
-  logic [63:0]  result;     // Computed value (or physical reg tag for PRF)
-  logic [4:0]   rd;         // Destination architectural register
-  logic [63:0]  pc;         // PC of this instruction (for exceptions)
-  logic         done;       // Set by execution unit when complete
-  logic         has_except; // Instruction caused an exception
-  logic [63:0]  except_val; // Exception value (e.g., faulting address)
-  logic [3:0]   except_cause; // Exception code (per RISC-V spec)
-  logic         valid;      // ROB entry is occupied
-} rob_entry_t;
-
-module rob_commit #(parameter int DEPTH = 32) (
-  input  logic        clk_i, rst_ni,
-  input  rob_entry_t  rob [DEPTH],
-  input  logic [$clog2(DEPTH)-1:0] head_ptr,
-  // Commit outputs
-  output logic        commit_valid_o,  // Committing this cycle
-  output logic [4:0]  commit_rd_o,     // Destination register
-  output logic [63:0] commit_data_o,   // Value to write
-  output logic        exception_o,     // Exception at head
-  output logic [63:0] exception_pc_o,
-  output logic [3:0]  exception_cause_o
-);
-  rob_entry_t head;
-  assign head = rob[head_ptr];
-
-  always_comb begin
-    commit_valid_o    = 1'b0;
-    commit_rd_o       = '0;
-    commit_data_o     = '0;
-    exception_o       = 1'b0;
-    exception_pc_o    = '0;
-    exception_cause_o = '0;
-
-    if (head.valid && head.done) begin
-      if (head.has_except) begin
-        // Raise exception — squash will happen in the control path
-        exception_o       = 1'b1;
-        exception_pc_o    = head.pc;
-        exception_cause_o = head.except_cause;
-      end else begin
-        // Clean commit: write result to architectural register file
-        commit_valid_o = (head.rd != 5'b0); // skip x0 writes
-        commit_rd_o    = head.rd;
-        commit_data_o  = head.result;
-      end
-    end
-  end
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l3-q1", "l3-q2", "l3-q5"]
-  },
-
-  {
-    id: "lesson-09",
-    category: "Out-of-Order Execution",
-    title: "Physical Register Files and Register Renaming",
-    difficulty: "advanced",
-    duration: "11 min read",
-    summary: "WAW and WAR hazards are false dependencies that strangle ILP. Register renaming eliminates them completely — here's the RAT, the free list, and what happens on a branch flush.",
-    body: `In an in-order pipeline, we saw that RAW (read-after-write) hazards require forwarding or stalls. But out-of-order processors face two more hazard types that are just as crippling: WAW (write-after-write) and WAR (write-after-read). The key insight: these are false dependencies. They exist only because two instructions happen to use the same architectural register name, not because one instruction's value actually depends on the other's.
-
-Consider this code:
-    mul x5, x1, x2    // Instruction A: writes x5
-    add x6, x3, x4    // Instruction B: reads x3, x4, writes x6
-    div x5, x7, x8    // Instruction C: writes x5 (WAW with A)
-    sub x9, x5, x10   // Instruction D: reads x5 (should read C's result)
-
-A and C both write x5. In an out-of-order machine, C might finish before A, then A overwrites x5 with the wrong value — and D reads stale data. This is a WAW hazard. Register renaming solves this by giving each instruction its own unique physical register.
-
-**The Physical Register File (PRF):** Instead of 32 architectural registers, the hardware maintains a larger PRF — typically 128–256 entries on modern designs. The extra entries are the "rename pool" that absorbs the false dependencies.
-
-**The Register Alias Table (RAT):** A 32-entry table mapping each architectural register to its current physical register. On every instruction dispatch:
-1. Look up rs1 and rs2 in the RAT to find the source physical registers
-2. Allocate a new physical register from the free list for the destination rd
-3. Record the old physical register mapping (needed for recovery)
-4. Update the RAT entry for rd to point to the new physical register
-
-Now A and C each get unique physical registers (say, p45 and p67). D reads from p67 (C's output), completely unaffected by A's write to p45. The WAW hazard is gone.
-
-**WAR hazards** are also eliminated: a read instruction looks up the RAT and records the physical register at that instant. A later write to the same architectural register gets a new physical register — it never touches the physical register that the read is using.
-
-**The Free List:** A FIFO or bit-vector of available physical registers. On dispatch, dequeue one physical register for the new instruction's result. On commit, the old physical register (the one the RAT pointed to before renaming) is returned to the free list — it's now dead and can be recycled.
-
-**Checkpoint-based recovery:** On a branch, the CPU takes a snapshot of the entire RAT (a "checkpoint"). If the branch mispredicts, restore the RAT to the checkpoint and return all physical registers allocated after the checkpoint to the free list. This makes recovery O(1) regardless of how many instructions were in-flight.
-
-The number of physical registers directly limits the instruction window: you can have at most (PRF_size - 32) instructions in-flight simultaneously. This is why larger PRFs enable higher IPC — they support a bigger window for the CPU to find independent instructions.`,
-    keyInsights: [
-      "WAW and WAR hazards are false dependencies — register renaming eliminates them by giving each instruction's result its own physical register.",
-      "The RAT maps 32 architectural registers to current physical registers. Updated at dispatch, read at dispatch, restored on misprediction.",
-      "The free list tracks available physical registers. Allocate at dispatch, free at commit (when the old mapping is no longer needed by in-flight instructions).",
-      "Checkpoint recovery: snapshot RAT at each branch. On mispredict, restore RAT checkpoint and bulk-free post-branch physical registers. O(1) recovery.",
-      "Maximum in-flight instructions = PRF size - 32 (always need to reserve 32 for committed architectural state). Bigger PRF = more ILP visibility."
-    ],
-    snippets: [
-      {
-        label: "RAT Lookup and Free List Allocation",
-        language: "systemverilog",
-        code: `// Register Alias Table + Free List management
-// Simplified: 32 arch regs → 64 physical regs (32 rename slots)
-
-module rat_free_list #(
-  parameter int ARCH_REGS = 32,
-  parameter int PHYS_REGS = 64
-)(
-  input  logic                          clk_i, rst_ni,
-  // Dispatch: look up source physical regs, allocate dest physical reg
-  input  logic [$clog2(ARCH_REGS)-1:0] rs1_i, rs2_i, rd_i,
-  input  logic                          dispatch_valid_i,
-  output logic [$clog2(PHYS_REGS)-1:0] prs1_o, prs2_o, // source phys regs
-  output logic [$clog2(PHYS_REGS)-1:0] prd_o,           // new dest phys reg
-  output logic                          free_list_empty_o,
-  // Commit: return old physical reg to free list
-  input  logic                          commit_valid_i,
-  input  logic [$clog2(PHYS_REGS)-1:0] old_prd_i  // physical reg being freed
-);
-  // RAT: arch_reg → physical_reg
-  logic [$clog2(PHYS_REGS)-1:0] rat [ARCH_REGS];
-  // Free list: bit-vector of available physical registers
-  logic [PHYS_REGS-1:0] free_list;
-
-  // Combinational RAT lookup for source registers
-  assign prs1_o = rat[rs1_i];
-  assign prs2_o = rat[rs2_i];
-  assign free_list_empty_o = (free_list == '0);
-
-  // Find lowest free physical register (priority encoder)
-  logic [$clog2(PHYS_REGS)-1:0] next_free;
-  always_comb begin
-    next_free = '0;
-    for (int i = PHYS_REGS-1; i >= 0; i--)
-      if (free_list[i]) next_free = i[$clog2(PHYS_REGS)-1:0];
-  end
-  assign prd_o = next_free;
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      // Initialize: arch reg i maps to physical reg i, rest are free
-      for (int i = 0; i < ARCH_REGS; i++) rat[i] <= i[$clog2(PHYS_REGS)-1:0];
-      free_list <= {{(PHYS_REGS-ARCH_REGS){1'b1}}, {ARCH_REGS{1'b0}}};
-    end else begin
-      if (dispatch_valid_i && rd_i != '0 && !free_list_empty_o) begin
-        rat[rd_i]         <= next_free;   // Update RAT
-        free_list[next_free] <= 1'b0;     // Allocate physical reg
-      end
-      if (commit_valid_i)
-        free_list[old_prd_i] <= 1'b1;    // Return old physical reg to free list
-    end
-  end
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l3-q1", "l3-q5"]
-  },
-
-  {
-    id: "lesson-10",
-    category: "AI Accelerators",
-    title: "Systolic Arrays: Matrix Multiplication at Silicon Speed",
-    difficulty: "advanced",
-    duration: "11 min read",
-    summary: "The Google TPU's systolic array achieves 92 TOPS/W by maximizing arithmetic intensity. Here's the PE structure, dataflow, and why it maps so perfectly to matrix multiply.",
-    body: `Neural network inference is dominated by one operation: matrix multiplication. A transformer layer doing a 4096×4096 matrix multiply requires 33 billion multiply-accumulate (MAC) operations. If your hardware does 1 TOPS (10^12 operations/second), that's 33 milliseconds per layer — far too slow for real-time inference. The Google TPU achieves 92 TOPS at high efficiency using a systolic array. Here's why it works so well.
-
-**The Roofline Model:** Every compute system has two limits: compute throughput (FLOPS/sec) and memory bandwidth (bytes/sec). The ratio gives the arithmetic intensity threshold. If your algorithm needs fewer FLOPs per byte than the threshold, you're memory-bandwidth-bound. Matrix multiply has arithmetic intensity proportional to the matrix dimension — for large matrices, it's overwhelmingly compute-bound. The goal of a systolic array is to maximize compute utilization while minimizing the memory bandwidth required to feed it.
-
-**Processing Element (PE) Structure:** Each PE is simple: store one weight value (W), receive an activation (A) from the left, compute A×W and add to an accumulator (partial sum), pass A to the right PE, receive a partial sum from above, add W×A, pass updated partial sum downward. In hardware, this is just one multiplier, one accumulator register, and two pass-through registers. The PE runs at the full system clock.
-
-**Weight-Stationary Dataflow:** In the TPU's dataflow, weights are loaded into the PE array once and stay there (stationary). Activations flow left-to-right through the array. Partial sums accumulate vertically (top-to-bottom). For a 256×256 array:
-- 256 activations enter from the left simultaneously (one per row)
-- Each activation flows right, multiplying by each weight in its row
-- Partial sums accumulate downward through 256 rows
-- After 256+256-1 cycles, all 256×256 output elements are complete
-
-The key insight: each activation value is used 256 times (once per column). Each weight is reused for every batch element. The memory bandwidth needed is proportional to the perimeter of the matrix, not its area — arithmetic intensity scales with N for NxN matrices.
-
-**Why NVIDIA GPUs are similar:** Tensor cores in NVIDIA Ampere and Hopper are essentially small systolic arrays (4×4 or 8×8 tiles) replicated hundreds of times and orchestrated by a programmable CUDA scheduler. The key difference: the TPU is a pure systolic array (fixed dataflow, very efficient, less flexible), while GPU tensor cores sit inside a general-purpose SIMT architecture (more programmable, somewhat less efficient per watt for pure matrix multiply).
-
-**Sparsity:** A major focus of modern accelerator research. Neural networks often have 50-90% zero weights after pruning. A dense systolic array wastes compute on multiplications by zero. Sparse accelerators (like Nvidia A100's sparsity support, or Cerebras's approach) skip zero-valued MAC operations. This is where the next generation of efficiency gains will come from.
-
-For RTL implementation, the systolic array is beautifully regular — identical PE tiles connected in a grid, all running in lock-step. A 4×4 array fits in ~50 lines of generate-instantiated SystemVerilog. The challenge is in the memory system: feeding 256 activations per cycle to a 256×256 array requires a very wide, very fast buffer.`,
-    keyInsights: [
-      "Systolic arrays maximize arithmetic intensity by reusing each data element many times: each activation flows through an entire row of PEs, multiplied by 256 weights.",
-      "The PE is minimal: one multiplier + one accumulator + two pass-through registers. The power of the systolic array comes from replication, not PE complexity.",
-      "Weight-stationary dataflow: load weights once, stream activations through. Memory bandwidth scales as O(N²) while compute scales as O(N³) — compute-bound for large N.",
-      "TPU vs GPU: TPU is a purpose-built systolic array (high efficiency, fixed dataflow). GPU tensor cores are small systolic tiles inside general-purpose SIMT (more flexible, slightly less efficient).",
-      "The roofline model explains why systolic arrays win for large matrix multiply: the algorithm's arithmetic intensity far exceeds the hardware's compute/bandwidth ratio."
-    ],
-    snippets: [
-      {
-        label: "MAC Processing Element + 4×4 Systolic Array via Generate",
-        language: "systemverilog",
-        code: `// Single MAC Processing Element for systolic array
-// Weight-stationary: weight loaded once, activation passes through
-module mac_pe #(parameter int DATA_W = 8, parameter int ACC_W = 32) (
-  input  logic                clk_i, rst_ni,
-  input  logic [DATA_W-1:0]   act_in,    // Activation from left PE
-  input  logic [DATA_W-1:0]   weight,    // Stationary weight
-  input  logic [ACC_W-1:0]    psum_in,   // Partial sum from above PE
-  output logic [DATA_W-1:0]   act_out,   // Pass activation to right PE
-  output logic [ACC_W-1:0]    psum_out   // Pass updated partial sum down
-);
-  logic [ACC_W-1:0] acc;
-  // Multiply-accumulate: add weight×activation to incoming partial sum
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      acc      <= '0;
-      act_out  <= '0;
-    end else begin
-      acc      <= psum_in + ({{(ACC_W-DATA_W){1'b0}}, act_in} *
-                              {{(ACC_W-DATA_W){1'b0}}, weight});
-      act_out  <= act_in; // Pass activation to the right
-    end
-  end
-  assign psum_out = acc;
-endmodule
-
-// 4×4 Systolic Array using generate
-module systolic_4x4 #(parameter int DATA_W = 8, parameter int ACC_W = 32)(
-  input  logic clk_i, rst_ni,
-  input  logic [DATA_W-1:0] act_col   [4], // 4 activations enter left column
-  input  logic [DATA_W-1:0] weights   [4][4], // Pre-loaded weight matrix
-  input  logic [ACC_W-1:0]  psum_top  [4], // Partial sums enter top row (0)
-  output logic [ACC_W-1:0]  psum_bot  [4]  // Results exit bottom row
-);
-  logic [DATA_W-1:0] act_wire [4][5]; // act_wire[row][col]: col 0=input, 4=discard
-  logic [ACC_W-1:0]  psum_wire[5][4]; // psum_wire[row][col]: row 0=input, 4=output
-  assign psum_wire[0] = psum_top;
-  generate
-    for (genvar r = 0; r < 4; r++) begin : row
-      assign act_wire[r][0] = act_col[r]; // Activations enter from left
-      for (genvar c = 0; c < 4; c++) begin : col
-        mac_pe #(DATA_W, ACC_W) pe (
-          .clk_i, .rst_ni,
-          .act_in   (act_wire [r][c]),
-          .weight   (weights  [r][c]),
-          .psum_in  (psum_wire[r][c]),
-          .act_out  (act_wire [r][c+1]),
-          .psum_out (psum_wire[r+1][c])
-        );
-      end
-    end
-  endgenerate
-  assign psum_bot = psum_wire[4];
-endmodule`
-      }
-    ],
-    relatedQuestions: ["l3-q8"]
+    relatedQuestions: ["l3-q1", "l3-q3", "l1-q3", "l2-q6"]
   }
 ];
 
 export const getLessonById = (id: string): Lesson | undefined =>
   lessons.find((l) => l.id === id);
 
-export const getLessonsByCategory = (): Record<string, Lesson[]> => {
-  const map: Record<string, Lesson[]> = {};
-  for (const l of lessons) {
-    if (!map[l.category]) map[l.category] = [];
-    map[l.category].push(l);
-  }
-  return map;
-};
+export const getLessonsByStage = (): Lesson[] =>
+  [...lessons].sort((a, b) => a.stage - b.stage);
