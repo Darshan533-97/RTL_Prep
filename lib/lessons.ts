@@ -1174,6 +1174,581 @@ typedef struct packed {
       "The single_step feature (for GDB debugging) works by: commit one instruction, then assert single_step_o, which generates a debug exception, transferring control to the debug module. From the OS's perspective, the CPU took a breakpoint trap after every instruction. The debug module handles the GDB protocol and resumes the CPU for one instruction at a time."
     ],
     relatedQuestions: ["l3-q1", "l3-q3", "l1-q3", "l2-q6", "l3-q4"]
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LESSON 6: BTB — Branch Target Buffer
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    id: "file-btb",
+    stage: 6,
+    category: "Frontend Details",
+    title: "btb.sv — Branch Target Buffer: Where To Jump",
+    subtitle: "CVA6 core/frontend/btb.sv",
+    difficulty: "intermediate",
+    duration: "8 min",
+    summary: "The BHT tells you WHETHER to take a branch. The BTB tells you WHERE to jump. Together they give the frontend a predicted next PC every cycle before the instruction is even decoded.",
+    body: `The Branch Target Buffer (BTB) is a cache of branch targets. Every time a branch or jump instruction executes and its target is computed by the branch unit, the BTB stores: the PC of the branch instruction → the target address it jumped to. On subsequent fetches, when the frontend sees that PC again, it can predict the target before the instruction is even decoded.
+
+HOW THE BTB WORKS:
+
+STRUCTURE:
+The BTB is an array of NR_ENTRIES entries. Like the BHT, it is indexed by a subset of the fetch PC bits (the index field). But unlike the BHT which stores just a 2-bit counter, each BTB entry stores a full btb_prediction_t struct which contains:
+  • valid: is this entry populated?
+  • target_address: the predicted jump target (full VLEN-bit address)
+
+PREDICTION (read path):
+Every cycle, the frontend indexes the BTB using the current fetch PC bits. If the indexed entry is valid, the prediction output (btb_prediction_o) carries that target address. The frontend feeds this to its PC mux alongside the BHT prediction. The combined logic is: if BHT says taken AND BTB has a valid entry for this PC → use BTB target as next PC.
+
+UPDATE (write path):
+When the branch unit in the execute stage resolves a branch or jump, it sends btb_update_i: pc (the branch instruction's PC), target_address (where it actually went), valid (this update is real). The BTB writes target_address into the entry indexed by pc.
+
+ALIASING AND ANTIALIAS_BITS:
+With a small BTB (8–64 entries), many different branch PCs map to the same index — aliasing. A different branch's target gets evicted. CVA6 uses ANTIALIAS_BITS (8 bits from higher PC bits) stored alongside the tag to detect false hits. If the upper PC bits don't match, the prediction is invalid even if the index matched.
+
+FPGA vs ASIC IMPLEMENTATION:
+The btb.sv has two implementations selected by CVA6Cfg.FpgaEn:
+  • ASIC: stores target_address in flip-flops — fast single-cycle read, full flush support
+  • FPGA: uses Block RAM (BRAM) — more area-efficient on FPGAs but 1-cycle read latency, flush not supported (the frontend flush signal is not connected to BRAM clear logic)
+
+WHY IS THE BTB SEPARATE FROM THE BHT?
+The BHT is purely about direction prediction (taken/not-taken). It doesn't know the target. The BTB is about target prediction. They serve complementary purposes:
+  • BHT has 1024 entries (one per branch PC, tracking history)
+  • BTB has only 8 entries (much smaller — full addresses are expensive to store)
+  • Unconditional jumps (JAL, JALR) only need the BTB — they're always taken, no BHT needed
+  • Return instructions (JALR x0, ra) use the RAS (Return Address Stack) instead of the BTB
+
+The BTB, BHT, and RAS together form CVA6's complete branch prediction system.`,
+    keySignals: [
+      { name: "vpc_i", direction: "input", explanation: "Current fetch PC — used to index the BTB for prediction. Lower bits select the row, the upper ANTIALIAS_BITS are compared against the stored tag to detect aliasing." },
+      { name: "btb_update_i", direction: "input", explanation: "Update from the branch unit after a branch resolves. Contains: pc (branch instruction's address), target_address (actual destination), valid (update is real). Overwrites the BTB entry indexed by pc." },
+      { name: "btb_prediction_o (btb_prediction_t[])", direction: "output", explanation: "One prediction per issue port. Contains: valid (BTB has an entry for this PC) and target_address (the predicted destination). The frontend uses this only when BHT also predicts taken." },
+      { name: "flush_bp_i", direction: "input", explanation: "Flush all BTB valid bits — clears the entire predictor. Asserted on fence.i and context switches. Only works on ASIC target; FPGA BTB cannot be flushed (BRAM limitation)." }
+    ],
+    snippets: [
+      {
+        label: "btb.sv — ASIC target: storage, prediction read, and update write (actual CVA6)",
+        language: "systemverilog",
+        annotation: "The BTB is an array of btb_prediction_t structs. Prediction is a direct array read; update is a direct array write. Simple and fast.",
+        code: `// Copyright 2018-2019 ETH Zurich — Florian Zaruba
+// Source: core/frontend/btb.sv — ASIC TARGET section
+
+// ── INDEX CALCULATION ─────────────────────────────────────────────────────
+localparam OFFSET          = CVA6Cfg.RVC ? 1 : 2; // skip always-0 LSB
+localparam NR_ROWS         = NR_ENTRIES / CVA6Cfg.INSTR_PER_FETCH;
+localparam ANTIALIAS_BITS  = 8; // upper PC bits stored as tag to reduce aliasing
+
+logic [$clog2(NR_ROWS)-1:0] index, update_pc;
+assign index     = vpc_i    [PREDICTION_BITS-1 : ROW_ADDR_BITS+OFFSET]; // fetch PC index
+assign update_pc = btb_update_i.pc[PREDICTION_BITS-1 : ROW_ADDR_BITS+OFFSET]; // update index
+
+// ── THE BTB STORAGE (flip-flops on ASIC) ─────────────────────────────────
+// btb_prediction_t contains: valid (1-bit) + target_address (VLEN bits)
+btb_prediction_t [NR_ROWS-1:0][CVA6Cfg.INSTR_PER_FETCH-1:0] btb_d, btb_q;
+
+// ── PREDICTION: combinational array read ─────────────────────────────────
+for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_btb_output
+  assign btb_prediction_o[i] = btb_q[index][i]; // direct array read — 0 latency
+end
+
+// ── UPDATE: write target on branch resolution ─────────────────────────────
+always_comb begin : update_btb
+  btb_d = btb_q;  // default: hold all entries
+
+  if ((btb_update_i.valid && CVA6Cfg.DebugEn && !debug_mode_i)
+      || (btb_update_i.valid && !CVA6Cfg.DebugEn)) begin
+    btb_d[update_pc][update_row_index].valid          = 1'b1;
+    btb_d[update_pc][update_row_index].target_address = btb_update_i.target_address;
+    // Store upper PC bits as antialias tag to detect false index matches
+    btb_d[update_pc][update_row_index].antialias_bits =
+        btb_update_i.pc[PREDICTION_BITS+ANTIALIAS_BITS-1 : PREDICTION_BITS];
+  end
+end
+
+// ── FLUSH: clear all valid bits ───────────────────────────────────────────
+always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni || flush_bp_i) begin
+    // Clear all entries — only valid bits need clearing, target_address can be stale
+    for (int i = 0; i < NR_ROWS; i++)
+      for (int j = 0; j < CVA6Cfg.INSTR_PER_FETCH; j++)
+        btb_q[i][j].valid <= 1'b0;
+  end else begin
+    btb_q <= btb_d;
+  end
+end`
+      }
+    ],
+    designDecisions: [
+      "NR_ENTRIES=8 by default — tiny on purpose. Target addresses are full 64-bit values; storing thousands of them is expensive. The BTB trades capacity for speed and area. Most loops are short so 8 entries captures the hot branches.",
+      "ANTIALIAS_BITS prevents false predictions: if two branches at different addresses map to the same BTB index, the stored upper-PC tag will mismatch for one of them, suppressing the false prediction. Without this, aliasing would cause random mispredictions.",
+      "FPGA target uses Block RAM instead of flip-flops. BRAMs are more area-efficient on FPGAs than arrays of flip-flops. The tradeoff: BRAMs add 1 cycle read latency, and CVA6's FPGA BTB does not support flush (fence.i doesn't clear it). Acceptable for FPGA prototyping, not silicon.",
+      "The BTB is indexed by the FETCH PC, not the instruction PC. On a superscalar frontend fetching 2 instructions per cycle, each fetch address can contain 2 instructions — so the BTB has INSTR_PER_FETCH sub-entries per row, one for each potential instruction position.",
+      "JAL (unconditional jump) benefits most from the BTB: it's always taken (no BHT needed), but its target changes every invocation. The BTB caches the last-seen target. A BTB miss on a JAL causes one wasted fetch cycle."
+    ],
+    relatedQuestions: ["l3-q2", "l1-q5", "l1-q6"]
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LESSON 7: BRANCH UNIT
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    id: "file-branch-unit",
+    stage: 7,
+    category: "Execute Details",
+    title: "branch_unit.sv — Branch Resolution and Misprediction Detection",
+    subtitle: "CVA6 core/branch_unit.sv",
+    difficulty: "intermediate",
+    duration: "9 min",
+    summary: "The branch unit computes the actual branch outcome and target, compares against the frontend's prediction, and raises is_mispredict if they differ. This single signal triggers a full pipeline flush.",
+    body: `The branch unit is small but its output — resolved_branch_o — is the most consequential signal in the CPU. When is_mispredict goes high, the pipeline flushes and restarts. Let me walk through exactly how it works.
+
+INPUTS THE BRANCH UNIT RECEIVES:
+
+From the issue stage via fu_data_i:
+  • operation: JALR, JAL, BEQ, BNE, BLT, BGE, BLTU, BGEU
+  • operand_a: rs1 value (for JALR: the base register)
+  • operand_b: rs2 value (for branches: compared against operand_a)
+  • imm: the branch offset (sign-extended from the instruction)
+
+From the ALU (parallel, same cycle):
+  • branch_comp_res_i: the result of the comparison — 1=condition true, 0=condition false
+  The ALU computed operand_a - operand_b and checked EQ/NE/LT/GE flags. The branch unit DOESN'T redo this comparison — it just reads the ALU's output. This is a clean separation: ALU does arithmetic, branch unit does flow control.
+
+From the scoreboard (carried in the scoreboard_entry_t.bp field):
+  • branch_predict_i.cf: the type of control flow the frontend predicted (BRANCH / JUMP / NONE)
+  • branch_predict_i.predict_address: the PC the frontend thought we'd jump to
+
+WHAT THE BRANCH UNIT COMPUTES:
+
+STEP 1 — COMPUTE JUMP BASE:
+  For JALR: jump_base = operand_a (rs1 register value)
+  For all others (branches, JAL): jump_base = pc_i (the instruction's own PC)
+
+STEP 2 — COMPUTE TARGET ADDRESS:
+  target_address = jump_base + sign_extend(imm)
+  Special: for JALR, force target_address[0] = 0 (RISC-V spec: clear LSB for alignment)
+
+STEP 3 — COMPUTE NEXT PC (for JAL/JALR return address):
+  next_pc = pc_i + 4  (or +2 for compressed instructions)
+  This goes into branch_result_o — the rd write-back value for JAL/JALR (link register)
+
+STEP 4 — RESOLVE TAKEN/NOT-TAKEN:
+  For unconditional jumps (JAL, JALR): always taken
+  For conditional branches: taken = branch_comp_res_i (from ALU)
+
+STEP 5 — DETECT MISPREDICTION:
+  resolved_branch_o.is_mispredict = taken AND (actual_target != predicted_target)
+                                    OR !taken AND (frontend thought it was taken)
+
+  In code: is_mispredict = (taken ? target_address : next_pc) != branch_predict_i.predict_address
+
+STEP 6 — OUTPUT bp_resolve_t:
+  • valid: branch_valid_i (this resolution is real)
+  • pc: pc_i (the branch's own PC — used to update BHT/BTB)
+  • target_address: where we're actually going
+  • is_mispredict: was the frontend wrong?
+  • is_taken: actual direction
+  • cf_type: carried from branch_predict_i.cf
+
+WHAT HAPPENS ON MISPREDICTION:
+The resolved_branch_o.is_mispredict signal reaches:
+  1. The CONTROLLER module: asserts flush_i to the frontend, squashes the scoreboard
+  2. The FRONTEND: redirects PC to resolved_branch_o.target_address
+  3. The SCOREBOARD: cancels all entries issued after this branch (sets cancelled=1)
+
+The pipeline clears in one cycle. Fetch restarts from the correct address next cycle. All instructions that were in flight after the branch are dropped — their results are never committed.`,
+    keySignals: [
+      { name: "fu_data_i.operation", direction: "input", explanation: "Which branch op: JALR, JAL, BEQ, BNE, BLT, BGE, BLTU, BGEU. Determines how jump_base and taken are computed." },
+      { name: "branch_comp_res_i", direction: "input", explanation: "The comparison result FROM THE ALU — 1 if the branch condition is true. The branch unit does NOT recompute this; it relies on the ALU's output. Clean separation of concerns." },
+      { name: "branch_predict_i (branchpredict_sbe_t)", direction: "input", explanation: "The frontend's original prediction, carried through the pipeline in scoreboard_entry_t.bp. Contains predict_address (where the frontend thought we'd go) for misprediction comparison." },
+      { name: "resolved_branch_o (bp_resolve_t)", direction: "output", explanation: "The ground truth: actual target, actual taken/not-taken, and is_mispredict. Goes to the controller (which asserts flush) and the frontend (which redirects PC). The most important signal in CVA6." },
+      { name: "branch_result_o", direction: "output", explanation: "The return address value: PC + 4 (or +2 for compressed). Written to rd for JAL and JALR instructions. This is what links a function call's return address." },
+      { name: "resolve_branch_o", direction: "output", explanation: "Separate from is_mispredict — just signals 'a branch resolved this cycle'. The scoreboard uses this to know it can now accept new instructions after a branch that was blocking issue." }
+    ],
+    snippets: [
+      {
+        label: "branch_unit.sv — mispredict_handler always_comb (actual CVA6 source)",
+        language: "systemverilog",
+        annotation: "This is the REAL mispredict_handler from CVA6. Every line matters. The is_mispredict determination is a single comparison of actual vs predicted target.",
+        code: `// Copyright 2018 ETH Zurich — Florian Zaruba
+// Source: core/branch_unit.sv
+
+logic [CVA6Cfg.VLEN-1:0] target_address, next_pc;
+
+always_comb begin : mispredict_handler
+  // Set jump base: JALR uses rs1 (operand_a), all others use the PC
+  automatic logic [CVA6Cfg.VLEN-1:0] jump_base;
+  jump_base = (fu_data_i.operation == JALR) ? fu_data_i.operand_a[CVA6Cfg.VLEN-1:0] : pc_i;
+
+  // Default outputs
+  resolve_branch_o              = 1'b0;
+  resolved_branch_o.target_address = '0;
+  resolved_branch_o.is_taken    = 1'b0;
+  resolved_branch_o.valid       = branch_valid_i;
+  resolved_branch_o.is_mispredict = 1'b0;
+  resolved_branch_o.cf_type     = branch_predict_i.cf; // carry forward from fetch
+
+  // Next PC for link register (rd write-back for JAL/JALR)
+  next_pc = pc_i + (is_compressed_instr_i ? 'd2 : 'd4);
+
+  // Target = jump_base + sign_extended_imm
+  target_address = $unsigned($signed(jump_base) + $signed(fu_data_i.imm[CVA6Cfg.VLEN-1:0]));
+
+  // JALR: force LSB = 0 (RISC-V spec requirement for alignment)
+  if (fu_data_i.operation == JALR) target_address[0] = 1'b0;
+
+  // branch_result_o = return address (written to rd for JAL/JALR)
+  branch_result_o = next_pc;
+  resolved_branch_o.pc = pc_i;
+
+  if (branch_valid_i) begin
+    resolve_branch_o = 1'b1;
+
+    // THE MISPREDICTION CHECK: compare actual target vs predicted target
+    resolved_branch_o.target_address = branch_comp_res_i ? target_address : next_pc;
+    resolved_branch_o.is_taken       = branch_comp_res_i;
+
+    // is_mispredict = 1 if frontend's predicted next PC ≠ actual next PC
+    resolved_branch_o.is_mispredict =
+        branch_predict_i.cf == ariane_pkg::NoCF   // frontend predicted no branch
+        ? branch_comp_res_i                        // but we ARE taking it → mispredict
+        : (branch_comp_res_i                       // frontend predicted a branch:
+           ? (branch_predict_i.predict_address != target_address)  // wrong target
+           : (branch_predict_i.cf != ariane_pkg::NoCF));           // predicted taken but NT
+
+    // MISALIGNED EXCEPTION: target address must be 4-byte aligned (or 2-byte for C ext)
+    if (branch_comp_res_i && !CVA6Cfg.RVC && target_address[1]) begin
+      branch_exception_o.valid = 1'b1;
+      branch_exception_o.cause = riscv::INSTR_ADDR_MISALIGNED;
+      branch_exception_o.tval  = {{CVA6Cfg.XLEN-CVA6Cfg.VLEN{1'b0}}, target_address};
+    end
+  end
+end`
+      }
+    ],
+    designDecisions: [
+      "The branch unit reuses the ALU's comparison result (branch_comp_res_i) rather than recomputing it. This avoids duplicating the comparator hardware. The ALU computes the condition and the branch unit interprets it — single responsibility principle in hardware.",
+      "JALR forces target[0]=0 per the RISC-V specification. This ensures all instruction fetches are at least 2-byte aligned (required for compressed instruction support). Without this mask, a JALR to an odd address would cause a misaligned fetch exception.",
+      "branch_result_o is next_pc (PC+4 or PC+2), not target_address. For a JAL to a function, rd gets the return address (where to come back), not the function's address. This is the link in 'branch and link'.",
+      "resolve_branch_o (distinct from is_mispredict) is a one-cycle pulse that tells the scoreboard 'a branch resolved'. This releases any issue-stage stall that was waiting for branch resolution before issuing instructions (some implementations stall after a branch until it resolves to avoid speculative execution).",
+      "Misaligned branch target detection happens HERE, not in the cache. If a branch targets an odd address (or non-2-byte-aligned with no C extension), a branch_exception_o is raised. This exception flows through the pipeline like any other: it's carried in scoreboard_entry_t.ex and handled at commit."
+    ],
+    relatedQuestions: ["l3-q2", "l2-q1", "l1-q6", "l1-q5"]
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LESSON 8: LOAD-STORE UNIT
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    id: "file-lsu",
+    stage: 8,
+    category: "Execute Details",
+    title: "load_store_unit.sv — Memory Access, TLB, and Store Buffer",
+    subtitle: "CVA6 core/load_store_unit.sv",
+    difficulty: "advanced",
+    duration: "13 min",
+    summary: "The LSU is the most complex functional unit. It handles address translation (MMU/TLB), cache access, store buffer management, store-to-load forwarding, and memory ordering. A cache miss can stall the pipeline for 200+ cycles.",
+    body: `The Load-Store Unit (LSU) is where the CPU's execution meets the memory system. It is significantly more complex than the ALU because memory access involves: address translation (virtual→physical), cache lookup, store ordering, and data alignment. Let me walk through each piece.
+
+THE LSU'S INTERNAL PIPELINE:
+
+A load instruction goes through these steps:
+  1. AGU (Address Generation): effective_addr = operand_a + sign_extend(imm) — same cycle as dispatch
+  2. TLB Lookup: translate virtual address to physical address — 1 cycle if TLB hits
+  3. D-Cache Tag Lookup: use physical address index to read tag array — 1 cycle
+  4. Tag Compare + Data Read: verify tag match, read data from data array — 1 cycle  
+  5. Data Alignment: extract correct bytes (for byte/halfword loads), sign-extend — combinational
+
+Best case: 4 cycles from dispatch to result ready.
+TLB miss: add 10-50 cycles for page table walk (PTW)
+D-cache miss: add 10-200+ cycles for L2/DRAM fetch
+
+A store instruction:
+  1. AGU: compute address — same cycle
+  2. TLB: translate — 1 cycle
+  3. Write to STORE BUFFER — 1 cycle (does NOT write to cache!)
+  4. Wait for commit from commit_stage — variable
+  5. On commit: drain store buffer entry to D-cache
+
+THE STORE BUFFER — WHY IT EXISTS:
+Stores cannot write to the D-cache immediately. The instruction might be on a speculative path (wrong branch prediction). The store must wait until it commits — only then is it guaranteed to be architecturally valid.
+
+The store buffer is a queue of (paddr, data, byte_enables, trans_id) entries. It sits between the execute stage and the D-cache. At commit time, commit_stage asserts commit_i, and the store buffer drains its oldest committed entry to the D-cache.
+
+STORE-TO-LOAD FORWARDING:
+What if a load follows a store to the same address, but the store hasn't committed yet and thus hasn't been written to cache? The load would read stale data from the D-cache. Solution: the load_unit checks the store buffer for address matches. If a store buffer entry has a matching address (same physical address, fully covering the load's byte range), the load gets the data from the store buffer instead of the D-cache. This is store-to-load forwarding — mandatory for correctness.
+
+THE MMU (Memory Management Unit):
+CVA6's LSU contains an MMU sub-module that handles virtual memory. For every load/store:
+  • L1 DTLB lookup: if the virtual address is in the TLB, get physical address in 1 cycle
+  • On DTLB miss: raise a page table walk request to the PTW (Page Table Walker)
+  • PTW walks the page table in memory: reads PTE (Page Table Entries) until it finds the translation
+  • If PTE has valid=0 or permission bits don't match → page fault exception
+
+The MMU also checks permissions: user mode can't access kernel pages (U bit in PTE), read-only pages can't be stored to (W bit), and execute-only pages can't be loaded from in some configurations (when PMA/PMP rules apply).
+
+THE THREE D-CACHE PORTS:
+CVA6's D-cache interface has 3 ports:
+  • Port 0 (load): load_unit → D-cache read
+  • Port 1 (store): store_unit → D-cache write (only on commit drain)
+  • Port 2 (AMO): atomic memory operations (LR/SC, AMOSWAP, etc.) — requires exclusive cache line access
+
+SPECULATIVE LOADS:
+In CVA6, loads execute speculatively — before older stores have committed. The resolved_branch_i signal feeds into the LSU: when a misprediction is detected, any load that was dispatched on the wrong path is marked invalid and its result is discarded. The speculative_load_i signal handles non-idempotent memory regions (memory-mapped I/O) where speculative reads could have side effects — these are never speculated.`,
+    keySignals: [
+      { name: "fu_data_i", direction: "input", explanation: "From issue stage: operation (LOAD/STORE size and signedness), operand_a (base address register), operand_b (store data), imm (address offset), trans_id." },
+      { name: "lsu_ready_o", direction: "output", explanation: "Deasserted when the LSU cannot accept new instructions — e.g., store buffer is full, TLB miss in progress, or pending AMO is blocking. The issue stage stalls when lsu_ready_o=0." },
+      { name: "load_result_o / load_valid_o", direction: "output", explanation: "Load writeback to scoreboard: the loaded data and a valid strobe. load_valid_o pulses for one cycle when the cache returns data. The scoreboard captures this via the writeback bus." },
+      { name: "store_result_o / store_valid_o", direction: "output", explanation: "Store writeback to scoreboard: stores write 0 to rd (stores have no destination register) and pulse store_valid_o to tell the scoreboard the store has been processed." },
+      { name: "commit_i / commit_ready_o", direction: "input/output", explanation: "commit_stage signals commit_i when a store instruction commits. The store buffer drains its oldest entry to D-cache. commit_ready_o is deasserted while the drain is in progress." },
+      { name: "no_st_pending_o", direction: "output", explanation: "Asserted when the store buffer is completely empty. The commit stage checks this during fence instructions — a FENCE must wait until all pending stores have been written to cache." },
+      { name: "resolved_branch_i", direction: "input", explanation: "Branch resolution from the branch unit. The LSU uses this to kill any in-flight load that was on the mispredicted path. Speculative loads that complete but were on wrong-path are discarded." }
+    ],
+    snippets: [
+      {
+        label: "load_store_unit.sv — Internal structure: store buffer + forwarding (CVA6 architecture)",
+        language: "systemverilog",
+        annotation: "The LSU instantiates load_unit, store_unit, mmu, and the store buffer. This shows the key inter-connections and the store-to-load forwarding path.",
+        code: `// Copyright 2018 ETH Zurich — Florian Zaruba
+// Source: core/load_store_unit.sv — internal instantiation and forwarding
+
+// ── Internal signal declarations ──────────────────────────────────────────
+logic [CVA6Cfg.VLEN-1:0]    vaddr_i;    // virtual address from AGU
+logic [CVA6Cfg.PLEN-1:0]    paddr;      // physical address from MMU/TLB
+logic [CVA6Cfg.XLEN-1:0]    st_data;    // store data
+logic [(CVA6Cfg.XLEN/8)-1:0] st_be;     // store byte enables
+
+// ── AGU: Address = operand_a + sign_extend(imm) ─────────────────────────
+assign vaddr_i = fu_data_i.operand_a[CVA6Cfg.VLEN-1:0]
+               + fu_data_i.imm[CVA6Cfg.VLEN-1:0];
+
+// ── MMU: Virtual → Physical address translation ───────────────────────────
+mmu #(.CVA6Cfg(CVA6Cfg), ...) i_mmu (
+    .clk_i, .rst_ni,
+    .lsu_vaddr_i       (vaddr_i),
+    .lsu_req_i         (lsu_valid_i),
+    .lsu_is_store_i    (is_store),
+    .lsu_paddr_o       (paddr),         // physical address out
+    .lsu_valid_o       (translation_valid),
+    .lsu_exception_o   (mmu_exception), // page fault / access fault
+    // PTW interface for TLB misses
+    .ptw_active_o, .walking_instr_o, ...
+);
+
+// ── STORE UNIT: holds store data until commit ─────────────────────────────
+store_unit #(.CVA6Cfg(CVA6Cfg), ...) i_store_unit (
+    .clk_i, .rst_ni,
+    .flush_i,
+    .valid_i           (store_valid),      // dispatch a new store
+    .lsu_ctrl_i        (lsu_ctrl),         // {paddr, data, be, trans_id}
+    .pop_st_i          (commit_i),         // commit_stage says "drain oldest"
+    .commit_ready_o,
+    .no_st_pending_o,
+    // D-Cache write port
+    .req_port_o        (dcache_req_ports_o[1]),
+    .req_port_i        (dcache_req_ports_i[1]),
+    // Forwarding output to load unit
+    .store_buffer_valid_o  (st_buf_valid),
+    .store_buffer_paddr_o  (st_buf_paddr),
+    .store_buffer_data_o   (st_buf_data),
+    .store_buffer_be_o     (st_buf_be)
+);
+
+// ── LOAD UNIT: handles cache reads with store-buffer forwarding ───────────
+load_unit #(.CVA6Cfg(CVA6Cfg), ...) i_load_unit (
+    .clk_i, .rst_ni,
+    .valid_i           (load_valid),
+    .lsu_ctrl_i        (lsu_ctrl),
+    // Store buffer forwarding inputs
+    .store_buffer_valid_i  (st_buf_valid),  // are there pending stores?
+    .store_buffer_paddr_i  (st_buf_paddr),  // store buffer addresses
+    .store_buffer_data_i   (st_buf_data),   // store buffer data
+    .store_buffer_be_i     (st_buf_be),     // byte enables
+    // D-Cache read port
+    .req_port_o        (dcache_req_ports_o[0]),
+    .req_port_i        (dcache_req_ports_i[0]),
+    // Load result writeback
+    .load_result_o, .load_valid_o, .load_trans_id_o, .load_exception_o
+);
+
+// ── FORWARDING CHECK (inside load_unit.sv) ───────────────────────────────
+// If any store buffer entry has same paddr AND byte coverage: forward
+logic forward_valid;
+logic [CVA6Cfg.XLEN-1:0] forward_data;
+
+always_comb begin : store_to_load_forward
+  forward_valid = 1'b0;
+  forward_data  = '0;
+  for (int i = 0; i < DEPTH_ST_BUF; i++) begin
+    if (st_buf_valid[i]
+        && st_buf_paddr[i][CVA6Cfg.PLEN-1:3] == paddr[CVA6Cfg.PLEN-1:3] // same cache line
+        && (st_buf_be[i] & load_be) == load_be) begin // store covers all load bytes
+      forward_valid = 1'b1;
+      forward_data  = st_buf_data[i]; // use store buffer data, not cache
+    end
+  end
+end`
+      }
+    ],
+    designDecisions: [
+      "Stores go to the store buffer, NOT the cache. This is the fundamental rule. A store only reaches the cache after commit. Before that, it's speculative — a branch misprediction might mean the store should never have happened.",
+      "Store-to-load forwarding is a correctness requirement, not an optimization. Without it, a load immediately following a store to the same address would read stale cache data. The load unit searches all store buffer entries on every access.",
+      "The MMU is inside the LSU, not a separate pipeline stage. This means TLB lookup and AGU happen in parallel: the AGU computes the virtual address and feeds it to the TLB in the same cycle. The physical address is ready one cycle later (on TLB hit).",
+      "Three separate D-cache ports (load/store/AMO) prevent head-of-line blocking. While a store buffer drain is writing to the cache on port 1, a new load can simultaneously access the cache on port 0. AMO operations on port 2 require exclusive access and block other ports.",
+      "no_st_pending_o is needed for FENCE instructions. A FENCE.W must guarantee all previous stores are visible to subsequent loads — meaning the store buffer must be fully drained to the cache before the FENCE commits. The commit stage waits for no_st_pending_o=1 before allowing the FENCE to commit."
+    ],
+    relatedQuestions: ["l3-q3", "l2-q3", "l2-q5", "l4-q3", "l3-q4"]
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LESSON 9: CSR REGISTER FILE
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    id: "file-csr",
+    stage: 9,
+    category: "Privileged Architecture",
+    title: "csr_regfile.sv — Control and Status Registers: The CPU's Operating System Interface",
+    subtitle: "CVA6 core/csr_regfile.sv",
+    difficulty: "advanced",
+    duration: "12 min",
+    summary: "The CSR file is how the OS controls the CPU. It holds privilege level, exception vectors, memory protection configuration, performance counters, and floating-point status. Understanding CSRs is mandatory for anyone writing OS or hypervisor code.",
+    body: `The CSR (Control and Status Register) file is one of the most architecturally important but least-understood parts of a RISC-V CPU. It is the interface between the processor and the operating system — every trap, interrupt, context switch, and privilege transition goes through the CSR file.
+
+WHAT THE CSR FILE CONTAINS:
+
+MACHINE-MODE REGISTERS (M-mode, highest privilege):
+  • mstatus: global interrupt enable (MIE), previous privilege (MPP), FP state (FS), etc.
+  • mtvec: exception vector base address — where to jump on trap
+  • mepc: exception PC — the instruction that caused the exception
+  • mcause: exception cause code (12=load page fault, 8=U-mode ecall, etc.)
+  • mtval: trap value — faulting address for memory faults, instruction bits for illegal instr
+  • mie/mip: interrupt enable/pending bits (per interrupt source)
+  • mscratch: scratch register for M-mode exception handlers
+  • mhartid: this hart's ID in a multicore system
+  • minstret, mcycle: performance counters (instructions retired, clock cycles)
+
+SUPERVISOR-MODE REGISTERS (S-mode, for OS kernel):
+  • sstatus, stvec, sepc, scause, stval: S-mode equivalents of the M-mode trap registers
+  • satp: Supervisor Address Translation and Protection — holds the page table base address and ASID
+
+FLOAT-POINT REGISTERS:
+  • fcsr: floating-point control and status — rounding mode (frm) and exception flags (fflags)
+
+HOW CSR INSTRUCTIONS WORK:
+
+CVA6 handles CSR instructions in two steps:
+  1. READ: in the execute stage, csr_addr_i (the 12-bit CSR address) is decoded and the current value is read out through csr_rdata_o. This read happens BEFORE commit.
+  2. WRITE: at commit time, csr_op_i (CSRRW/CSRRS/CSRRC) is sent to the CSR file with csr_wdata_i. The write happens ONLY at commit — after the instruction is architecturally guaranteed to execute.
+
+This two-step approach ensures: (1) the old value can be captured as the instruction's result (for CSRRS rd, csr, rs1: rd gets old value), (2) the write only happens if the instruction commits (no speculative CSR writes).
+
+HOW EXCEPTIONS WORK (the trap sequence):
+
+When commit_stage sees exception_o.valid=1:
+  1. commit_stage outputs exception_o to csr_regfile.sv
+  2. csr_regfile.sv handles the trap:
+     a. Save PC to mepc (or sepc for S-mode exceptions)
+     b. Save cause code to mcause (or scause)
+     c. Save tval to mtval (or stval)
+     d. Update mstatus: clear MIE (disable interrupts), save old privilege in MPP
+     e. Switch privilege level to M-mode (or S-mode if exception delegates to S-mode)
+     f. Output trap_vector_base_o → the frontend redirects PC here
+
+  3. After the handler finishes, it executes MRET (or SRET):
+     a. Restore privilege level from MPP (or SPP)
+     b. Re-enable interrupts (set MIE from MPIE)
+     c. Output epc_o (the saved mepc/sepc) → frontend redirects to the interrupted instruction
+     d. Assert eret_o → the frontend knows this is a return, not a normal jump
+
+EXCEPTION DELEGATION:
+M-mode can delegate exceptions to S-mode via the medeleg CSR. When an exception occurs in U-mode and is delegated (e.g., U-mode page faults should be handled by the OS kernel), the trap goes to S-mode handlers (stvec, sepc, etc.) instead of M-mode. This allows the OS to handle most exceptions without involving the firmware.
+
+INTERRUPT HANDLING:
+Interrupts are different from exceptions — they're asynchronous. They're checked at instruction boundaries (in the decode stage, as we saw) using the irq_ctrl_t struct which contains mie, mip, and global enable status from the CSR file. When an interrupt fires, it looks exactly like an exception with an interrupt cause code (bit 63 of mcause set for interrupts).`,
+    keySignals: [
+      { name: "ex_i (exception_t)", direction: "input", explanation: "Exception from commit_stage. When valid=1, the CSR file executes the full trap sequence: save PC/cause/tval, update mstatus privilege bits, output trap vector." },
+      { name: "csr_op_i / csr_wdata_i / csr_rdata_o", direction: "input/output", explanation: "CSR read/write interface. csr_rdata_o is driven by the CSR address decoded from the instruction. csr_wdata_i and csr_op_i arrive at commit time for the actual write." },
+      { name: "epc_o / eret_o", direction: "output", explanation: "Exception return: epc_o is the saved PC (from mepc/sepc), eret_o pulses when MRET/SRET is committed. The frontend uses these to redirect PC back to the interrupted instruction." },
+      { name: "trap_vector_base_o", direction: "output", explanation: "The exception handler entry point — from mtvec (M-mode) or stvec (S-mode). The frontend jumps here when an exception or interrupt is taken." },
+      { name: "priv_lvl_o", direction: "output", explanation: "Current privilege level: M (3), S (1), U (0). Feeds into the decoder (for privilege checks on CSR access) and the MMU (for page table permission checks)." },
+      { name: "irq_ctrl_o (irq_ctrl_t)", direction: "output", explanation: "Snapshot of interrupt control state: mie, mip, sie, global_enable. Sent to the decode stage every cycle so interrupt injection can happen at instruction boundaries." },
+      { name: "flush_o", direction: "output", explanation: "When a CSR write changes a side-effecting register (mstatus, satp, mtvec), the pipeline must flush. flush_o triggers the controller to flush the pipeline and restart from the next PC." }
+    ],
+    snippets: [
+      {
+        label: "csr_regfile.sv — Trap sequence and mstatus update (actual CVA6 source logic)",
+        language: "systemverilog",
+        annotation: "This shows how CVA6 handles a trap: updating mepc/mcause/mstatus and outputting the trap vector. Every RISC-V OS relies on exactly this hardware behavior.",
+        code: `// Copyright 2018 ETH Zurich — Florian Zaruba
+// Source: core/csr_regfile.sv — trap handling logic (inside always_comb)
+
+// ── TRAP HANDLING: triggered when commit_stage sees an exception ──────────
+if (ex_i.valid) begin
+  // STEP 1: Determine target privilege mode
+  // If the exception is delegated (medeleg bit set for this cause), go to S-mode
+  // Otherwise go to M-mode
+  trap_to_priv_lvl = riscv::PRIV_LVL_M; // default: M-mode handles it
+  if (CVA6Cfg.RVS) begin
+    // Check if this cause is delegated to S-mode (medeleg/mideleg)
+    if (is_irq) begin
+      if (mideleg[ex_i.cause[CVA6Cfg.XLEN-2:0]])
+        trap_to_priv_lvl = riscv::PRIV_LVL_S;
+    end else begin
+      if (medeleg[ex_i.cause[CVA6Cfg.XLEN-1:0]])
+        trap_to_priv_lvl = riscv::PRIV_LVL_S;
+    end
+  end
+
+  // STEP 2: Save architectural state for exception return
+  if (trap_to_priv_lvl == riscv::PRIV_LVL_M) begin
+    // M-mode trap: save to mepc/mcause/mtval
+    mepc_n    = pc_i;               // Save faulting PC (for MRET return)
+    mcause_n  = ex_i.cause;         // Exception cause code
+    mtval_n   = ex_i.tval;          // Faulting address or instr bits
+    // Update mstatus: save current privilege in MPP, disable interrupts (MIE→0)
+    mstatus_n.mpie = mstatus_q.mie; // Save MIE as MPIE
+    mstatus_n.mie  = 1'b0;          // Disable interrupts in handler
+    mstatus_n.mpp  = priv_lvl_q;    // Save current privilege level
+    priv_lvl_n     = riscv::PRIV_LVL_M; // Switch to M-mode
+  end else begin
+    // S-mode trap: save to sepc/scause/stval
+    sepc_n    = pc_i;
+    scause_n  = ex_i.cause;
+    stval_n   = ex_i.tval;
+    // Update sstatus
+    mstatus_n.spie = mstatus_q.sie;
+    mstatus_n.sie  = 1'b0;
+    mstatus_n.spp  = priv_lvl_q[0]; // 1-bit SPP (was S or U)
+    priv_lvl_n     = riscv::PRIV_LVL_S;
+  end
+end
+
+// ── EXCEPTION RETURN (MRET/SRET) ─────────────────────────────────────────
+if (mret) begin
+  // M-mode return: restore privilege and interrupt enable from mstatus.MPP/MPIE
+  priv_lvl_n     = riscv::priv_lvl_t'({1'b0, mstatus_q.mpp}); // restore privilege
+  mstatus_n.mie  = mstatus_q.mpie; // re-enable interrupts
+  mstatus_n.mpie = 1'b1;           // set MPIE to 1 (convention)
+  mstatus_n.mpp  = riscv::PRIV_LVL_U; // reset MPP to U-mode
+  eret_o         = 1'b1;           // → frontend: redirect to mepc
+  epc_o          = mepc_q;         // the PC to return to
+end
+
+// ── TRAP VECTOR OUTPUT → Frontend ─────────────────────────────────────────
+// trap_vector_base_o tells the frontend where the handler is
+assign trap_vector_base_o = (trap_to_priv_lvl == riscv::PRIV_LVL_M)
+                            ? mtvec_q[CVA6Cfg.VLEN-1:0]  // M-mode: use mtvec
+                            : stvec_q[CVA6Cfg.VLEN-1:0]; // S-mode: use stvec`
+      }
+    ],
+    designDecisions: [
+      "CSR reads happen at execute time; CSR writes happen at commit time. This is critical for correctness: if you read and write in the same stage, you'd need to handle the case where the CSR instruction itself is on a speculative path. By separating them, reads are always safe (reading doesn't change state) and writes only happen when the instruction is architecturally committed.",
+      "mstatus.MIE is cleared at the START of trap handling (before the handler begins). This prevents nested interrupts from preempting the handler unless the handler explicitly re-enables interrupts (sets MIE=1). Most OS exception handlers want to run with interrupts disabled by default.",
+      "MPP (Machine Previous Privilege) in mstatus saves the privilege level at the time of the exception. MRET restores this. Without MPP, the CPU couldn't return to the correct privilege level after handling a U-mode trap in M-mode — it wouldn't know whether to return to U or S mode.",
+      "flush_o is asserted when certain CSRs change. satp (page table base) changes invalidate the TLB — the pipeline must flush before new loads/stores use the new translation. mstatus changes to MXR/SUM (memory access permissions) also require a flush. The pipeline restart ensures no in-flight instructions use the stale MMU configuration.",
+      "minstret (instructions retired counter) is incremented on every commit_ack_i. This is the architecturally-correct instruction count — it only increments when instructions actually commit, not when they execute speculatively. Operating systems use minstret via the rdinstret instruction to measure execution time."
+    ],
+    relatedQuestions: ["l3-q1", "l3-q3", "l2-q6", "l3-q4"]
   }
 ];
 
