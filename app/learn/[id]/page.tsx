@@ -24,7 +24,6 @@ export default function LessonPage() {
   }
 
   const diff = DIFF_COLOR[lesson.difficulty];
-  const paragraphs = lesson.body.split("\n\n");
   const relatedQs = questions.filter(q => lesson.relatedQuestions.includes(q.id));
 
   return (
@@ -58,39 +57,58 @@ export default function LessonPage() {
         </p>
       </div>
 
-      {/* Body */}
+      {/* Body — render line by line for rich formatting */}
       <div style={{ marginBottom: "2rem" }}>
-        {paragraphs.map((para, i) => {
-          if (!para.trim()) return null;
-          // Detect section headers like "WHAT THE FRONTEND DOES:"
-          if (/^[A-Z][A-Z\s\-\/()]+:/.test(para.trim()) && para.trim().length < 80) {
+        {lesson.body.split("\n").map((line, i) => {
+          const t = line.trim();
+          if (!t) return <div key={i} style={{ height: "0.6rem" }} />;
+
+          // Section dividers like ────────────
+          if (/^─{5,}/.test(t)) return (
+            <hr key={i} style={{ border: "none", borderTop: "1px solid var(--border)", margin: "1rem 0" }} />
+          );
+
+          // ALL-CAPS section headers ending with colon: "WHAT THE FRONTEND DOES:"
+          if (/^[A-Z][A-Z0-9\s\-\/()]+:$/.test(t) && t.length < 90) return (
+            <div key={i} style={{ margin: "1.5rem 0 0.4rem 0", fontSize: "0.78rem", fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.07em", borderLeft: "3px solid var(--accent)", paddingLeft: "0.6rem" }}>
+              {t}
+            </div>
+          );
+
+          // Numbered step lines: "1. Something", "STEP 1 —", etc.
+          if (/^(STEP\s+\d|[1-9]\d*\.)/.test(t)) {
+            const inlined = t.replace(/`([^`]+)`/g, (_, c) => `<code style="background:var(--surface2);padding:0.05rem 0.3rem;border-radius:3px;font-family:monospace;font-size:0.82em;color:var(--accent)">${c}</code>`);
             return (
-              <div key={i} style={{ margin: "1.5rem 0 0.5rem 0", fontSize: "0.8rem", fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.06em", borderLeft: "3px solid var(--accent)", paddingLeft: "0.6rem" }}>
-                {para.trim()}
-              </div>
+              <p key={i} style={{ margin: "0.6rem 0 0.2rem 0.5rem", lineHeight: 1.75, color: "var(--text)", fontSize: "0.91rem", fontWeight: 600 }}
+                dangerouslySetInnerHTML={{ __html: inlined }} />
             );
           }
-          // Detect numbered items starting with a digit
-          if (/^\d+\./.test(para.trim())) {
+
+          // Bullet sub-items: "  • ..." or "  — ..."
+          if (/^\s*(•|—|–|\*)/.test(line)) {
+            const inlined = t.replace(/`([^`]+)`/g, (_, c) => `<code style="background:var(--surface2);padding:0.05rem 0.3rem;border-radius:3px;font-family:monospace;font-size:0.82em;color:var(--accent)">${c}</code>`);
             return (
-              <p key={i} style={{ margin: "0 0 0.75rem 0.5rem", lineHeight: 1.75, color: "var(--text)", fontSize: "0.92rem" }}>
-                {para.trim()}
-              </p>
+              <p key={i} style={{ margin: "0.1rem 0 0.1rem 1.4rem", lineHeight: 1.65, color: "var(--text-muted)", fontSize: "0.87rem" }}
+                dangerouslySetInnerHTML={{ __html: inlined }} />
             );
           }
-          // Detect "  — item" bullets
-          if (para.trim().startsWith("—")) {
+
+          // Bold inline headers: "ALU (alu.sv):", "Branch Unit (branch_unit.sv):"
+          if (/^\*\*[^*]+\*\*:/.test(t)) {
+            const label = t.replace(/^\*\*([^*]+)\*\*:/, (_, s) => `<strong style="color:var(--accent)">${s}:</strong>`);
+            const rest = label.replace(/`([^`]+)`/g, (_, c) => `<code style="background:var(--surface2);padding:0.05rem 0.3rem;border-radius:3px;font-family:monospace;font-size:0.82em;color:var(--accent)">${c}</code>`);
             return (
-              <p key={i} style={{ margin: "0 0 0.4rem 1.2rem", lineHeight: 1.7, color: "var(--text-muted)", fontSize: "0.88rem" }}>
-                {para.trim()}
-              </p>
+              <p key={i} style={{ margin: "1rem 0 0.2rem 0", lineHeight: 1.75, color: "var(--text)", fontSize: "0.91rem" }}
+                dangerouslySetInnerHTML={{ __html: rest }} />
             );
           }
-          const rendered = para.replace(/`([^`]+)`/g, (_, code) =>
-            `<code style="background:var(--surface2);padding:0.1rem 0.35rem;border-radius:3px;font-family:monospace;font-size:0.83em;color:var(--accent)">${code}</code>`
+
+          // Normal paragraph line
+          const rendered = t.replace(/`([^`]+)`/g, (_, c) =>
+            `<code style="background:var(--surface2);padding:0.05rem 0.3rem;border-radius:3px;font-family:monospace;font-size:0.82em;color:var(--accent)">${c}</code>`
           );
           return (
-            <p key={i} style={{ margin: "0 0 1rem 0", lineHeight: 1.8, color: "var(--text)", fontSize: "0.93rem" }}
+            <p key={i} style={{ margin: "0 0 0.5rem 0", lineHeight: 1.8, color: "var(--text)", fontSize: "0.92rem" }}
               dangerouslySetInnerHTML={{ __html: rendered }} />
           );
         })}
