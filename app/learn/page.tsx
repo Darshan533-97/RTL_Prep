@@ -30,6 +30,11 @@ export default function LearnPage() {
           Walk through a real out-of-order RISC-V processor (CVA6 by ETH Zurich) from frontend to commit.
           Each lesson explains the actual RTL — real module ports, real signals, real design decisions.
         </p>
+        <Link href="/hierarchy">
+          <button className="btn-ghost" style={{ marginTop: "0.5rem", fontSize: "0.82rem" }}>
+            🗂️ View Full Source Hierarchy →
+          </button>
+        </Link>
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
           {[1,2,3,4,5].map(s => (
             <span key={s} style={{ fontSize: "0.78rem", color: "var(--text-muted)", background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "4px", padding: "0.2rem 0.6rem" }}>

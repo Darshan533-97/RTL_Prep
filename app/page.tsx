@@ -81,6 +81,7 @@ export default function Home() {
       <div style={{ display: "flex", gap: "1rem", marginTop: "1.5rem", flexWrap: "wrap" }}>
         <Link href="/mock"><button className="btn-ghost">⏱ Mock Interview</button></Link>
         <Link href="/learn"><button className="btn-ghost">📚 Deep Dive Lessons</button></Link>
+        <Link href="/hierarchy"><button className="btn-ghost">🗂️ Source Hierarchy</button></Link>
       </div>
 
       {/* Quick Jump */}
