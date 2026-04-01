@@ -95,6 +95,15 @@ function FileCard({ file, expanded, onToggle }: { file: SourceFile; expanded: bo
               </div>
             </div>
           )}
+
+          {/* Deep Analysis Link */}
+          <div style={{ marginTop: "0.85rem" }}>
+            <Link href={`/analysis/${file.module}`} style={{ textDecoration: "none" }}>
+              <button className="btn-ghost" style={{ fontSize: "0.78rem", padding: "0.3rem 0.75rem" }}>
+                🔬 Deep Analysis: {file.module}.sv →
+              </button>
+            </Link>
+          </div>
         </div>
       )}
     </div>
