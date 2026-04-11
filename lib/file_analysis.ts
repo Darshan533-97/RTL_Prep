@@ -2430,6 +2430,264 @@ end`
       "minstret is incremented for every commit_ack_i — counting committed instructions, not executed ones. This is the architecturally correct definition. Speculative instructions that are cancelled don't increment minstret.",
       "Interrupt delegation (medeleg/mideleg): allows M-mode to hand specific exceptions/interrupts to S-mode handlers. When an exception is delegated, the trap uses sepc/scause/stval/stvec instead of the M-mode equivalents."
     ]
+  },
+
+  // ── BTB ───────────────────────────────────────────────────────────────────
+  {
+    module: "btb",
+    path: "core/frontend/btb.sv",
+    overview: "The Branch Target Buffer predicts where taken control-flow instructions will jump before decode runs. It is a tiny associative prediction structure in the frontend: given the current fetch PC, it returns a predicted target address and valid bit so the frontend can redirect fetch speculatively.",
+    internalLogic: `The BTB is part of CVA6's fetch-side branch prediction path. Its job is different from the BHT: the BHT predicts WHETHER a branch is taken, while the BTB predicts WHERE to go if it is taken.
+
+At a high level, the BTB stores a small set of entries keyed by branch PC. Each entry contains at least:
+  - branch PC tag / index information
+  - predicted target address
+  - valid bit
+
+FETCH-TIME BEHAVIOR:
+  1. frontend presents current virtual PC to the BTB
+  2. BTB compares the PC against its stored entries
+  3. on hit, returns a predicted target address and hit/valid indication
+  4. frontend combines BTB output with BHT direction prediction to decide next PC
+
+UPDATE BEHAVIOR:
+When a branch or jump resolves in execute, branch_unit sends an update record back to the frontend. If the instruction was taken or mispredicted, the BTB may allocate/update the entry so future fetches know the real destination.
+
+WHY A SEPARATE BTB?
+A direction predictor alone is not enough. If you know a branch is likely taken but do not know the target until decode/execute computes it, you still lose cycles. The BTB gives the frontend a speculative target early enough to keep the fetch stream flowing.
+
+CAPACITY TRADEOFF:
+The BTB is intentionally small. That keeps lookup fast enough for the frontend critical path but means aliasing and eviction are normal. Wrong-target predictions are corrected by branch_unit/controller later via the mispredict flush path.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : lookup / prediction readout",
+        type: "comb",
+        purpose: "Compares the fetch PC against BTB entries and returns predicted target information to the frontend.",
+        code: `always_comb begin : btb_lookup
+  btb_prediction_o.valid  = 1'b0;
+  btb_prediction_o.target = '0;
+
+  for (int i = 0; i < NR_ENTRIES; i++) begin
+    if (entry_valid_q[i] && entry_pc_q[i] == vpc_i) begin
+      btb_prediction_o.valid  = 1'b1;
+      btb_prediction_o.target = entry_target_q[i];
+    end
+  end
+end`
+      },
+      {
+        label: "always_ff : entry update / allocate",
+        type: "seq",
+        purpose: "Writes a resolved branch target into the BTB so future fetches can speculatively jump to it.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    entry_valid_q <= '0;
+  end else if (btb_update_i.valid) begin
+    entry_valid_q[update_index]  <= 1'b1;
+    entry_pc_q[update_index]     <= btb_update_i.pc;
+    entry_target_q[update_index] <= btb_update_i.target_address;
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "BTB and BHT solve different problems: BTB predicts the target address; BHT predicts taken/not-taken. The frontend usually needs both for a useful speculative redirect.",
+      "A BTB miss does not mean the design is wrong — it just means fetch falls back to the sequential PC path until decode/execute resolve the instruction.",
+      "Because the BTB sits on the fetch path, it is designed to be very small and fast rather than perfectly accurate or fully associative at large scale.",
+      "Wrong-target predictions are recovered by the normal branch misprediction machinery: branch_unit detects the mismatch and controller flushes younger instructions." 
+    ]
+  },
+
+  // ── ALU_WRAPPER ───────────────────────────────────────────────────────────
+  {
+    module: "alu_wrapper",
+    path: "core/alu_wrapper.sv",
+    overview: "alu_wrapper is a thin handshake shell around the combinational ALU. It converts the raw combinational datapath into a valid/ready style execution unit that issue_stage/ex_stage can schedule cleanly.",
+    internalLogic: `The core ALU itself is combinational: given operands and opcode, it produces a result immediately. Real execution pipelines still need control around that datapath:
+  - when an instruction is accepted
+  - when the result is considered valid
+  - how trans_id/result metadata are held
+  - how backpressure is expressed
+
+alu_wrapper provides that control shell.
+
+TYPICAL FLOW:
+  1. issue/ex_stage asserts valid_i with fu_data_i + trans_id
+  2. if wrapper is ready, it latches metadata and/or ALU output
+  3. one cycle later it asserts valid_o with the tagged result
+  4. downstream writeback logic consumes it
+
+WHY WRAP A COMBINATIONAL ALU?
+If you expose the bare combinational ALU directly everywhere, you push timing/control complexity into the surrounding pipeline. The wrapper isolates that complexity and gives the scheduler a standard interface similar to the other functional units.
+
+This is especially useful in a wider-issue design because the surrounding logic wants a common contract: ready means you may dispatch, valid means a writeback result exists, and trans_id keeps scoreboard bookkeeping aligned with the result.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : ready / accept logic",
+        type: "comb",
+        purpose: "Determines when the wrapper can accept a new ALU operation from the issue pipeline.",
+        code: `always_comb begin : alu_wrapper_ctrl
+  ready_o = !result_valid_q || result_ready_i;
+  accept  = valid_i && ready_o;
+end`
+      },
+      {
+        label: "always_ff : pipeline register",
+        type: "seq",
+        purpose: "Registers ALU output and transaction metadata so the result is presented with a clean valid pulse.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    result_valid_q <= 1'b0;
+  end else begin
+    if (accept) begin
+      result_q       <= alu_result;
+      trans_id_q     <= trans_id_i;
+      result_valid_q <= 1'b1;
+    end else if (result_ready_i) begin
+      result_valid_q <= 1'b0;
+    end
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "alu_wrapper does not change ALU math; it standardizes timing and handshake behavior around the ALU.",
+      "The wrapper is effectively a one-stage pipeline register, improving integration and often easing timing closure.",
+      "trans_id must travel with the result so scoreboard writeback marks the correct in-flight instruction complete.",
+      "If backpressure exists downstream, the wrapper holds the computed result stable until it is accepted." 
+    ]
+  },
+
+  // ── AMO_BUFFER ────────────────────────────────────────────────────────────
+  {
+    module: "amo_buffer",
+    path: "core/amo_buffer.sv",
+    overview: "amo_buffer serializes atomic memory operations. It holds the decoded AMO request and its metadata until the instruction reaches commit, ensuring the actual memory-side atomic transaction only happens when the instruction is architecturally allowed to retire.",
+    internalLogic: `Atomic memory operations cannot be treated like ordinary speculative stores. An AMO changes memory as part of an indivisible read-modify-write sequence, so firing it too early on a mispredicted path would violate architectural correctness.
+
+amo_buffer solves this by decoupling:
+  - execute-time decode/accept of the AMO instruction
+  - commit-time authorization to actually perform the memory-side atomic op
+
+FLOW:
+  1. execute side recognizes an AMO and packages address/op/data/trans_id
+  2. amo_buffer stores exactly one pending AMO entry
+  3. commit_stage later signals that the oldest instruction is really committing
+  4. amo_buffer forwards the request onto the D-cache atomic interface
+  5. when response returns, the result is written back with the original trans_id
+
+WHY SINGLE-ENTRY / SERIALIZED?
+AMOs are rare and expensive. Simplicity and correctness matter more than throughput here. Allowing multiple speculative AMOs would complicate ordering, exception recovery, and exclusivity guarantees.
+
+FLUSH INTERACTION:
+If a pipeline flush happens before commit authorizes the AMO, the pending buffered operation is simply discarded. That is the whole point of buffering it instead of issuing it immediately.`,
+    alwaysBlocks: [
+      {
+        label: "always_ff : pending AMO register",
+        type: "seq",
+        purpose: "Captures one AMO request and clears it on commit completion or flush.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    pending_valid_q <= 1'b0;
+  end else begin
+    if (flush_i) begin
+      pending_valid_q <= 1'b0;
+    end else if (valid_i && ready_o) begin
+      pending_valid_q <= 1'b1;
+      pending_req_q   <= amo_req_i;
+    end else if (amo_commit_i && amo_resp_i.done) begin
+      pending_valid_q <= 1'b0;
+    end
+  end
+end`
+      },
+      {
+        label: "always_comb : commit gate to D-cache",
+        type: "comb",
+        purpose: "Only releases the buffered AMO to the cache when commit authorizes it.",
+        code: `always_comb begin : amo_issue
+  dcache_req_port_o.valid = pending_valid_q && amo_commit_i;
+  dcache_req_port_o.req   = pending_req_q;
+  ready_o                 = !pending_valid_q;
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "The buffer prevents speculative side effects: an AMO does not touch memory until commit says the instruction is real.",
+      "Single-entry buffering is a deliberate design choice: AMOs are serialized to preserve ordering and simplify correctness.",
+      "AMO result writeback still needs the original transaction metadata so the scoreboard knows which instruction completed.",
+      "Flush-before-commit behavior is simple: discard the buffered AMO and pretend it never happened architecturally." 
+    ]
+  },
+
+  // ── WT_DCACHE ─────────────────────────────────────────────────────────────
+  {
+    module: "wt_dcache",
+    path: "core/cache_subsystem/wt_dcache.sv",
+    overview: "wt_dcache is the write-through data cache top level. It arbitrates multiple request sources from the LSU, looks up tags/data in the cache arrays, routes misses/refills toward AXI, and coordinates a write buffer so stores can complete under a write-through policy.",
+    internalLogic: `A write-through cache keeps memory coherent in a straightforward way: every store updates lower memory as well as any cached copy. That avoids dirty-line writeback complexity, but it makes write buffering and refill coordination more important.
+
+wt_dcache is the integration point for several cache-side structures:
+  - request port arbitration (loads, stores, AMOs)
+  - tag/data memory access
+  - miss / refill control
+  - write buffer management
+  - AXI adapter connection
+
+MULTI-PORT VIEW:
+The LSU exposes distinct logical traffic classes: load path, store path, and AMO path. wt_dcache accepts those requests, chooses which one advances, and returns grants / responses on the corresponding internal interfaces.
+
+WRITE-THROUGH CONSEQUENCE:
+Stores are not just local cache updates. They also need downstream memory traffic. The design therefore relies on buffering so a short burst of stores does not completely stall the core whenever the external bus is slower than the pipeline.
+
+FLUSH BEHAVIOR:
+Cache flush/control requests need to coordinate with outstanding operations. The top-level cache module is where 'stop taking new work, drain what must drain, invalidate what must invalidate' gets assembled across sub-blocks.
+
+In other words, wt_dcache is more of a subsystem coordinator than a single algorithmic block. The interesting logic is in how it wires arbitration, cache state, and external AXI traffic into one coherent memory backend.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : port arbitration / request selection",
+        type: "comb",
+        purpose: "Chooses which internal LSU/cache request port gets service in the current cycle and routes responses back.",
+        code: `always_comb begin : req_select
+  selected_port = '0;
+  cache_req     = '0;
+
+  if (amo_req_i.valid) begin
+    selected_port = AMO_PORT;
+    cache_req     = amo_req_i;
+  end else if (store_req_i.valid) begin
+    selected_port = STORE_PORT;
+    cache_req     = store_req_i;
+  end else if (load_req_i.valid) begin
+    selected_port = LOAD_PORT;
+    cache_req     = load_req_i;
+  end
+end`
+      },
+      {
+        label: "always_comb : flush / subsystem coordination",
+        type: "comb",
+        purpose: "Coordinates top-level cache-side control such as flush propagation, blocking, and response routing.",
+        code: `always_comb begin : cache_top_ctrl
+  cache_busy_o = ctrl_busy_i || wbuffer_busy_i || axi_busy_i;
+  flush_done_o = flush_i && !cache_busy_o;
+
+  ctrl_flush_i    = flush_i;
+  wbuffer_flush_i = flush_i;
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "wt_dcache is a subsystem wrapper: its main value is coordinating arbitration, cache control, memory arrays, write buffer, and AXI interface.",
+      "Write-through policy simplifies correctness relative to dirty write-back caches, but pushes more traffic into the write buffer / external memory path.",
+      "Multiple LSU-originating request classes share the same cache backend, so arbitration and fairness matter for overall CPU throughput.",
+      "Flush handling must consider the whole subsystem, not just the tag array — outstanding writes and AXI traffic matter too." 
+    ]
   }
 ];
 

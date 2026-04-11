@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { cva6Hierarchy, getHierarchyByCategory, IMPORTANCE_ORDER, type SourceFile } from "@/lib/hierarchy";
+import { fileAnalyses } from "@/lib/file_analysis";
 
 const IMPORTANCE_STYLE: Record<string, { color: string; bg: string; label: string }> = {
   top:       { color: "#ff8800", bg: "#2a1a00", label: "Top" },
@@ -26,6 +27,7 @@ const CATEGORY_ICON: Record<string, string> = {
 
 function FileCard({ file, expanded, onToggle }: { file: SourceFile; expanded: boolean; onToggle: () => void }) {
   const imp = IMPORTANCE_STYLE[file.importance];
+  const hasAnalysis = fileAnalyses.some((a) => a.module === file.module);
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: "6px", overflow: "hidden", marginBottom: "0.5rem" }}>
       <div
@@ -97,12 +99,15 @@ function FileCard({ file, expanded, onToggle }: { file: SourceFile; expanded: bo
           )}
 
           {/* Deep Analysis Link */}
-          <div style={{ marginTop: "0.85rem" }}>
+          <div style={{ marginTop: "0.85rem", display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
             <Link href={`/analysis/${file.module}`} style={{ textDecoration: "none" }}>
               <button className="btn-ghost" style={{ fontSize: "0.78rem", padding: "0.3rem 0.75rem" }}>
-                🔬 Deep Analysis: {file.module}.sv →
+                {hasAnalysis ? `🔬 Deep Analysis: ${file.module}.sv →` : `📝 Analysis TODO: ${file.module}.sv`}
               </button>
             </Link>
+            <span style={{ fontSize: "0.72rem", color: hasAnalysis ? "#00ff88" : "#ffdd00" }}>
+              {hasAnalysis ? "Available" : "Not covered yet"}
+            </span>
           </div>
         </div>
       )}
@@ -112,6 +117,7 @@ function FileCard({ file, expanded, onToggle }: { file: SourceFile; expanded: bo
 
 export default function HierarchyPage() {
   const byCategory = getHierarchyByCategory();
+  const analysisCoveragePct = Math.round((fileAnalyses.length / cva6Hierarchy.length) * 100);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<string>("");
 
@@ -140,7 +146,7 @@ export default function HierarchyPage() {
           🗂️ CVA6 Source Hierarchy
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.88rem", margin: 0, lineHeight: 1.6 }}>
-          Complete module tree for CVA6 RISC-V CPU (ETH Zurich / OpenHW Group). {cva6Hierarchy.length} modules mapped with instantiation relationships and key signals.
+          Complete module tree for CVA6 RISC-V CPU (ETH Zurich / OpenHW Group). {cva6Hierarchy.length} modules mapped with instantiation relationships and key signals; {fileAnalyses.length} currently have deep analysis ({analysisCoveragePct}% coverage).
         </p>
       </div>
 
