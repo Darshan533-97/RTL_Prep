@@ -2688,6 +2688,447 @@ end`
       "Multiple LSU-originating request classes share the same cache backend, so arbitration and fairness matter for overall CPU throughput.",
       "Flush handling must consider the whole subsystem, not just the tag array — outstanding writes and AXI traffic matter too." 
     ]
+  },
+
+  // ── BHT2LVL ───────────────────────────────────────────────────────────────
+  {
+    module: "bht2lvl",
+    path: "core/frontend/bht2lvl.sv",
+    overview: "bht2lvl is the alternative two-level branch predictor used by CVA6 when configured for a more advanced frontend predictor. It augments plain per-branch saturating counters with global branch history, improving correlation prediction for branch patterns that a simple local BHT cannot capture.",
+    internalLogic: `A classic 2-level predictor keeps two kinds of state:
+  1. a global history register (GHR) summarizing recent taken/not-taken outcomes
+  2. a pattern history table (PHT) of saturating counters indexed by some function of PC and history
+
+In CVA6's gshare-style version, the predictor usually XORs pieces of the fetch PC with the GHR to form the lookup index. That means two static branches with different PCs but similar control-flow patterns can still map to useful predictor state.
+
+PREDICTION FLOW:
+  - frontend sends current PC
+  - predictor computes index = PC bits XOR GHR
+  - indexed 2-bit counter returns taken/not-taken prediction
+
+UPDATE FLOW:
+  - execute resolves the real branch outcome
+  - predictor updates the corresponding 2-bit counter toward taken or not-taken
+  - GHR shifts in the newest resolved outcome
+
+WHY THIS HELPS:
+A simple BHT only learns 'this branch is often taken.' A two-level predictor can learn correlated patterns such as 'this branch is taken every other time' or 'taken only if a previous branch was taken.' That matters in real CPU control-flow where branches are often not independent.
+
+COST:
+The predictor is more accurate than a trivial BHT, but it is also more stateful and slightly more complex to update/recover. Like all speculative predictors, wrong guesses are still corrected by execute-stage resolution and pipeline flush.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : gshare lookup",
+        type: "comb",
+        purpose: "Forms the prediction index from PC/history and reads the 2-bit counter to produce a taken/not-taken guess.",
+        code: `always_comb begin : bht2lvl_lookup
+  index = vpc_i[IDX_MSB:IDX_LSB] ^ ghr_q;
+  counter = pht_q[index];
+  bht_prediction_o.valid = 1'b1;
+  bht_prediction_o.taken = counter[1]; // MSB of 2-bit saturating counter
+end`
+      },
+      {
+        label: "always_ff : PHT + GHR update",
+        type: "seq",
+        purpose: "Updates the saturating counter and shifts the resolved branch outcome into the global history register.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    ghr_q <= '0;
+  end else if (bht_update_i.valid) begin
+    pht_q[update_index] <= next_counter_value;
+    ghr_q <= {ghr_q[GHR_LEN-2:0], bht_update_i.taken};
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "The GHR captures recent branch outcomes, letting the predictor model correlated control-flow rather than only per-branch bias.",
+      "Using XOR of PC and GHR (gshare) reduces some destructive aliasing relative to indexing only by PC or only by history.",
+      "Prediction state is speculative in effect but updated from resolved branch outcomes, not guesses.",
+      "Even a better predictor is still advisory only — branch_unit remains the architectural source of truth for control flow." 
+    ]
+  },
+
+  // ── FPU_WRAP ──────────────────────────────────────────────────────────────
+  {
+    module: "fpu_wrap",
+    path: "core/fpu_wrap.sv",
+    overview: "fpu_wrap adapts CVA6's execution-stage interface to the external CV-FPU implementation. It packages floating-point operands, operation codes, rounding mode, and destination metadata into the form expected by fpnew/cvfpu, then converts the response back into CVA6 writeback form.",
+    internalLogic: `The floating-point unit is conceptually just another functional unit, but it differs from ALU/branch logic in three ways:
+  1. many operations are multi-cycle and variable-latency
+  2. floating-point exceptions (fflags) must be captured architecturally
+  3. operand/result formats include both integer and FP conversion cases
+
+fpu_wrap exists so ex_stage does not need to understand CV-FPU internals directly.
+
+RESPONSIBILITIES:
+  - decode CVA6 fu_data_t fields into CV-FPU op format
+  - select operands and rounding mode
+  - pass valid/ready handshakes through
+  - capture result, exception flags, and trans_id for writeback
+  - indicate when FP architectural state becomes dirty
+
+LATENCY HANDLING:
+Unlike a combinational ALU, floating-point operations may complete after several cycles, and the latency can depend on the operation (add vs divide vs sqrt). The wrapper therefore tracks the request/response handshake and preserves transaction metadata until the result comes back.
+
+ISA-LEVEL IMPORTANCE:
+The wrapper is also where architectural FP side effects become visible to the rest of the core: result register writeback and fflags update. That makes it the integration boundary between the generic CPU pipeline and the specialized FP datapath.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : request packing",
+        type: "comb",
+        purpose: "Maps CVA6 functional-unit inputs into the operand/opcode/rounding format expected by CV-FPU.",
+        code: `always_comb begin : fpu_req_pack
+  fpu_req_o.valid = fpu_valid_i;
+  fpu_req_o.op    = fu_data_i.operation;
+  fpu_req_o.rs1   = fu_data_i.operand_a;
+  fpu_req_o.rs2   = fu_data_i.operand_b;
+  fpu_req_o.rs3   = fu_data_i.imm;
+  fpu_req_o.rm    = fu_data_i.rm;
+end`
+      },
+      {
+        label: "always_ff : response capture",
+        type: "seq",
+        purpose: "Captures returning FP result metadata and exception flags for writeback into the core.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    resp_valid_q <= 1'b0;
+  end else if (fpu_resp_i.valid) begin
+    resp_valid_q <= 1'b1;
+    result_q     <= fpu_resp_i.result;
+    fflags_q     <= fpu_resp_i.fflags;
+    trans_id_q   <= trans_id_i;
+  end else if (result_ready_i) begin
+    resp_valid_q <= 1'b0;
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "fpu_wrap is an interface adapter, not the floating-point math engine itself; CV-FPU does the arithmetic.",
+      "Variable-latency completion means the wrapper must preserve bookkeeping so writeback still targets the correct in-flight instruction.",
+      "FP exception flags are architectural state and must travel alongside the numerical result.",
+      "The wrapper allows ex_stage to treat FP execution like a standard valid/ready functional unit despite very different internals." 
+    ]
+  },
+
+  // ── DM_TOP ────────────────────────────────────────────────────────────────
+  {
+    module: "dm_top",
+    path: "core/debug/dm_top.sv",
+    overview: "dm_top is the top-level RISC-V external debug module. It sits outside the normal execution pipeline and gives a debugger the ability to halt the hart, inspect state, run abstract commands, and access memory through the standardized debug transport path.",
+    internalLogic: `The debug module is not part of the architectural fast path, but it is crucial for bring-up, validation, and post-silicon debugging.
+
+TOP-LEVEL ROLE:
+  - receive debug transport requests (via DMI/JTAG stack in the SoC)
+  - expose debug CSRs/status
+  - request the CPU halt or resume
+  - orchestrate abstract register/memory access commands
+  - provide a program buffer path for more complex debug actions
+
+INTERACTION WITH CVA6:
+From the CPU's perspective, dm_top mostly appears as a debug request/control source. When asserted, the hart enters debug mode, saves the necessary context (through dpc/dcsr flow), and redirects execution into the debug machinery.
+
+WHY SEPARATE MODULE?
+Debug logic has different requirements from the core datapath: correctness matters more than raw timing, it may cross clock/protocol domains, and it needs strong compliance with the RISC-V debug specification. Keeping it modular prevents the CPU fast path from becoming polluted with low-frequency debug plumbing.
+
+ABSTRACTLY:
+Think of dm_top as the supervisor of all out-of-band control over the hart. Normal software uses architectural instructions; the debugger uses dm_top as an alternate control plane.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : debug request generation",
+        type: "comb",
+        purpose: "Decides when the hart should be halted, resumed, or serviced for an abstract debug command.",
+        code: `always_comb begin : dm_ctrl
+  debug_req_o = dmactive_i && haltreq_i;
+  resume_o    = dmactive_i && resumereq_i;
+  cmdbusy_o   = abstract_cmd_inflight_q;
+end`
+      },
+      {
+        label: "always_ff : debug command state",
+        type: "seq",
+        purpose: "Tracks whether an abstract command or debug operation is currently active.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    abstract_cmd_inflight_q <= 1'b0;
+  end else begin
+    if (cmd_start_i)
+      abstract_cmd_inflight_q <= 1'b1;
+    else if (cmd_done_i)
+      abstract_cmd_inflight_q <= 1'b0;
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "dm_top is an out-of-band control plane for the hart: halt, inspect, single-step, resume.",
+      "It is logically separate from the CPU pipeline, which helps preserve fast-path simplicity and timing.",
+      "Abstract commands and program buffer execution allow flexible debugging without inventing ad hoc backdoors.",
+      "Correct interaction with debug mode is architectural: the hart must stop/resume in a spec-compliant way, not just 'pause somehow'." 
+    ]
+  },
+
+  // ── FIFO_V3 ───────────────────────────────────────────────────────────────
+  {
+    module: "fifo_v3",
+    path: "vendor/pulp-platform/common_cells/src/fifo_v3.sv",
+    overview: "fifo_v3 is the general-purpose synchronous FIFO used across the design for decoupling producer/consumer timing. It provides the standard queue abstraction: push data in at the tail, pop data out at the head, and report empty/full/usage state.",
+    internalLogic: `This is one of the most reusable utility blocks in the project. Although simple conceptually, FIFOs are everywhere because pipelines constantly need elasticity between stages running at different instantaneous rates.
+
+CORE STATE:
+  - storage array for entries
+  - write pointer
+  - read pointer
+  - occupancy / usage tracking
+
+BEHAVIOR:
+  push_i when not full  -> write new entry, advance write pointer
+  pop_i when not empty  -> consume oldest entry, advance read pointer
+  push+pop together     -> occupancy may remain constant while pointers both move
+
+FALL-THROUGH MODE:
+Many common_cells FIFOs support a mode where if the FIFO is empty and a push arrives, the data may be immediately visible on the output without waiting a full extra cycle. This reduces latency in lightly loaded pipelines.
+
+WHY IMPORTANT IN CPUS?
+FIFOs convert hard cycle-by-cycle coupling into clean backpressure contracts. The frontend instruction queue, LSU request buffering, and many other structures become dramatically easier to reason about once isolated with a FIFO boundary.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : status flags",
+        type: "comb",
+        purpose: "Derives empty/full/usage outputs from pointer and occupancy state.",
+        code: `always_comb begin : fifo_status
+  empty_o = (usage_q == 0);
+  full_o  = (usage_q == DEPTH);
+  usage_o = usage_q;
+end`
+      },
+      {
+        label: "always_ff : pointer / memory update",
+        type: "seq",
+        purpose: "Updates FIFO storage, read/write pointers, and occupancy based on push/pop activity.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    rd_ptr_q <= '0;
+    wr_ptr_q <= '0;
+    usage_q  <= '0;
+  end else begin
+    if (push_i && !full_o) begin
+      mem_q[wr_ptr_q] <= data_i;
+      wr_ptr_q <= wr_ptr_q + 1'b1;
+    end
+    if (pop_i && !empty_o)
+      rd_ptr_q <= rd_ptr_q + 1'b1;
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "fifo_v3 is infrastructure: many higher-level CPU structures depend on it for clean decoupling and backpressure.",
+      "Simultaneous push/pop behavior is critical; many bugs in custom FIFOs come from mishandling occupancy updates when both happen together.",
+      "Fall-through mode trades a bit of implementation complexity for lower queue latency when traffic is sparse.",
+      "A good FIFO is boring in the best way: heavily reused, timing-clean, and behaviorally obvious." 
+    ]
+  },
+
+  // ── RR_ARB_TREE ───────────────────────────────────────────────────────────
+  {
+    module: "rr_arb_tree",
+    path: "vendor/pulp-platform/common_cells/src/rr_arb_tree.sv",
+    overview: "rr_arb_tree is a round-robin arbiter used when several requesters compete for one shared resource. Instead of always prioritizing requester 0, it rotates priority after each grant, preventing starvation and improving fairness under sustained contention.",
+    internalLogic: `Arbitration is a hidden but essential part of real hardware systems. Whenever multiple sources want one sink — cache ports, issue slots, shared buses — something must choose who wins.
+
+ROUND-ROBIN PRINCIPLE:
+  - maintain a rotating priority pointer or mask
+  - grant the first requester found after that pointer
+  - after a grant, advance the pointer for the next arbitration
+
+TREE STRUCTURE:
+The 'tree' implementation scales arbitration across many inputs efficiently instead of writing one huge flat priority chain. That improves timing and structure for larger request counts.
+
+WHY NOT FIXED PRIORITY?
+Fixed priority is simple but can starve low-priority requesters if high-priority ones stay busy. For shared subsystems like caches, that can create pathological latency and hurt throughput fairness.
+
+INTERACTION WITH LZC:
+A leading-zero counter or priority encoder primitive is often used to find the first active requester in a masked vector. rr_arb_tree builds fairness policy around that primitive.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : masked request select",
+        type: "comb",
+        purpose: "Applies the current round-robin mask/pointer and chooses the next requester to grant.",
+        code: `always_comb begin : rr_select
+  masked_req = req_i & rr_mask_q;
+  if (|masked_req)
+    winner = first_one(masked_req);
+  else
+    winner = first_one(req_i);
+end`
+      },
+      {
+        label: "always_ff : rotation state update",
+        type: "seq",
+        purpose: "Advances the round-robin priority after a successful grant so the next arbitration starts from the following requester.",
+        code: `always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    rr_mask_q <= '1;
+  end else if (gnt_i) begin
+    rr_mask_q <= next_rr_mask(winner);
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "Round-robin arbitration is about fairness over time, not just choosing a winner this cycle.",
+      "The tree structure keeps arbitration scalable and timing-friendly as requester count grows.",
+      "Mask-then-wrap behavior is the key idea: search from the current priority point, then wrap around if needed.",
+      "This utility block often matters more for system throughput than its small size suggests." 
+    ]
+  },
+
+  // ── LZC ───────────────────────────────────────────────────────────────────
+  {
+    module: "lzc",
+    path: "vendor/pulp-platform/common_cells/src/lzc.sv",
+    overview: "lzc is the common_cells leading/trailing zero counter and priority-encoding primitive. Given a bit vector, it finds the position of the first interesting bit and reports whether the vector is empty, making it useful for CLZ/CTZ instructions, arbiters, and free-slot search logic.",
+    internalLogic: `At first glance, counting leading zeros looks like a tiny helper. In practice it is a foundational primitive for many hardware tasks:
+  - CLZ/CTZ instructions in the ALU
+  - priority encoding in arbiters
+  - locating free/used entries in scoreboards/FIFOs
+
+FUNCTIONALLY:
+  input  -> bit vector
+  output -> count/index + empty indication
+
+IMPLEMENTATION STYLE:
+common_cells often uses recursive or tree-based generate logic so the structure scales with width. This is better than writing a giant hand-coded case statement for every vector size.
+
+LEADING VS TRAILING:
+Depending on configuration, the same structural idea can search from MSB downward or from LSB upward. That makes the module broadly reusable.
+
+WHY EXPOSE EMPTY?
+If no bit is set (or no zero is found, depending on convention), the numeric count alone is ambiguous. empty_o tells surrounding logic whether the reported count is meaningful.`,
+    alwaysBlocks: [
+      {
+        label: "always_comb : priority encode",
+        type: "comb",
+        purpose: "Encodes the first matching bit position and reports whether the input vector contains any candidate at all.",
+        code: `always_comb begin : lzc_comb
+  cnt_o   = '0;
+  empty_o = ~(|in_i);
+  for (int i = WIDTH-1; i >= 0; i--) begin
+    if (in_i[i])
+      cnt_o = WIDTH-1-i;
+  end
+end`
+      }
+    ],
+    stateMachines: [],
+    keyDesignPoints: [
+      "lzc is a reusable primitive, not just an ALU helper; arbiters and resource trackers depend on the same core operation.",
+      "Reporting empty separately avoids ambiguity when no candidate bit exists.",
+      "Parameterized width makes the block broadly reusable across datapath/control logic.",
+      "This kind of tiny utility module often becomes timing-critical because it sits inside larger control structures." 
+    ]
+  },
+
+  // ── ARIANE_PKG ────────────────────────────────────────────────────────────
+  {
+    module: "ariane_pkg",
+    path: "core/include/ariane_pkg.sv",
+    overview: "ariane_pkg is the semantic vocabulary of CVA6. It defines the enums, structs, helper functions, and operation encodings that let separate modules agree on what an instruction is, what functional unit should execute it, and how control/data move across the pipeline.",
+    internalLogic: `Packages are not datapath modules, but they are absolutely central to understanding the design. ariane_pkg is where CVA6 defines things like:
+  - functional unit enums (ALU, BRANCH, LOAD/STORE, MULT, CSR, FPU)
+  - operation enums inside those units
+  - shared structs passed between stages (scoreboard entry, branch resolution info, etc.)
+  - helper predicates such as is_store(), is_amo(), or state classification functions
+
+WHY THIS MATTERS:
+Without a common package, every module would have to redefine encodings and record layouts manually, which is fragile and unreadable. Packages provide a single source of truth.
+
+DESIGN EFFECT:
+When decoder marks an instruction as a LOAD with a specific operation enum, issue/ex_stage/commit all rely on ariane_pkg to interpret those fields consistently. In other words, this package is what makes the whole pipeline type-safe at the SystemVerilog level.
+
+MENTAL MODEL:
+If the modules are the organs of the CPU, ariane_pkg is the shared language they all speak.`,
+    alwaysBlocks: [],
+    stateMachines: [],
+    keyDesignPoints: [
+      "ariane_pkg defines semantic contracts between modules — especially enums and packed structs used throughout the pipeline.",
+      "Helper functions centralize common classification logic so every module does not reinvent its own decode predicates.",
+      "A bug in package definitions can ripple across the entire CPU because many blocks interpret the same types.",
+      "Reading this package early makes the rest of the RTL dramatically easier to follow." 
+    ]
+  },
+
+  // ── CONFIG_PKG ────────────────────────────────────────────────────────────
+  {
+    module: "config_pkg",
+    path: "core/include/config_pkg.sv",
+    overview: "config_pkg defines the CPU configuration structure and derived design parameters. It is the knob panel for CVA6: XLEN, feature enables, issue/commit widths, buffer sizes, extension support, and many other architectural or microarchitectural choices originate here.",
+    internalLogic: `A configurable CPU needs one coherent place where feature and sizing choices are defined. config_pkg provides that single source of truth.
+
+TYPICAL CONTENT:
+  - width parameters (XLEN, physical address size, vector sizes)
+  - issue/commit counts
+  - feature booleans (debug, floating point, compressed ISA, supervisor mode, etc.)
+  - cache/TLB/buffer sizing parameters
+  - derived configuration structs used by the rest of the design
+
+WHY THIS IS IMPORTANT:
+Configuration is not just syntactic convenience. It controls what hardware actually exists. Turning off FP or changing buffer depths alters structures, interfaces, and behavior across many modules.
+
+ENGINEERING BENEFIT:
+By funneling configuration through a package/struct, the design avoids ad hoc parameter spaghetti. Modules can depend on a common configuration object instead of dozens of loosely related parameters.
+
+PRACTICAL READING TIP:
+When trying to understand why a code path is conditional or why a module has a certain width, config_pkg is usually the first place to check.`,
+    alwaysBlocks: [],
+    stateMachines: [],
+    keyDesignPoints: [
+      "config_pkg is the single point of truth for architectural and microarchitectural feature configuration.",
+      "Many generate-time conditionals across the RTL depend on fields defined here.",
+      "Changing one configuration field can reshape interfaces, depths, or even whole feature blocks across the core.",
+      "Understanding the active config is often necessary before judging whether a code path is dead, optional, or mandatory." 
+    ]
+  },
+
+  // ── RISCV_PKG ─────────────────────────────────────────────────────────────
+  {
+    module: "riscv_pkg",
+    path: "core/include/riscv_pkg.sv",
+    overview: "riscv_pkg is the hardware encoding dictionary for the RISC-V specification inside CVA6. It defines opcodes, funct fields, privilege-level constants, exception causes, CSR addresses, PTE bit fields, and many other architectural constants used everywhere from decode to MMU to CSR handling.",
+    internalLogic: `If ariane_pkg is the CPU's internal language, riscv_pkg is its link to the external ISA specification.
+
+This package contains the constants that translate the written RISC-V spec into hardware-readable symbols:
+  - instruction opcode/funct constants for decoder logic
+  - privilege mode encodings (M/S/U)
+  - exception and interrupt cause numbers
+  - CSR addresses and field constants
+  - page table / PTE definitions for virtual memory logic
+
+WHY CENTRALIZE THIS?
+Because these encodings must be globally consistent. decoder, csr_regfile, ptw, trap logic, and debug/privilege code all need the exact same architectural constants.
+
+DESIGN VALUE:
+Using named constants instead of raw hex literals makes RTL far more readable and less error-prone. A statement like CSR_MSTATUS is self-explanatory; 12'h300 is not.
+
+READING VALUE:
+When you see symbolic names in the RTL and want to know what they mean architecturally, riscv_pkg is where the answer lives.`,
+    alwaysBlocks: [],
+    stateMachines: [],
+    keyDesignPoints: [
+      "riscv_pkg binds CVA6 to the RISC-V ISA's architectural encodings and constants.",
+      "Decoder, trap logic, CSR logic, and MMU code all rely on these definitions being exact.",
+      "Named architectural constants make the RTL much more maintainable than magic-number-heavy code.",
+      "This package is especially useful when cross-referencing RTL behavior against the RISC-V spec." 
+    ]
   }
 ];
 
